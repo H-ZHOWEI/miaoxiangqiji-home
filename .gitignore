@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# PyInstaller 构建中间产物
+build/
+
+# dist 只保留主程序 喵想奇记.exe
+dist/*
+!dist/喵想奇记.exe
+
+# 个人数据：录制的脚本、截图、运行时配置（一律不入库）
+scripts/*
+!scripts/.gitkeep
+images/
+mixed_groups/
+script_groups/
+app_settings.json
+scheduled_tasks.json
+tasks.json
+
+# 工具/编辑器
+.workbuddy/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
