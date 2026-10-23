@@ -148,6 +148,7 @@ class EventType:
 
 # ---------- 用户配置（跨会话保存） ----------
 DEFAULT_SCHEDULER_COUNTDOWN = 3  # 定时任务默认启动倒计时（秒）
+LOG_MAX_LINES = 1500  # 执行日志最多保留的行数，超出后自动裁剪最旧内容
 
 
 def get_config_dir():
@@ -758,10 +759,23 @@ class ScriptPlayer:
     def handle_keyboard_event(self, event):
         action, key = event
         key = self.parse_key(key)
-        if action == 'press':
-            self.keyboard_controller.press(key)
-        elif action == 'release':
-            self.keyboard_controller.release(key)
+        # 标记为“软件自己发出的按键”，避免被按键触发监听误判成用户按键
+        if self.app:
+            try:
+                self.app.set_synthetic_input(True)
+            except Exception:
+                pass
+        try:
+            if action == 'press':
+                self.keyboard_controller.press(key)
+            elif action == 'release':
+                self.keyboard_controller.release(key)
+        finally:
+            if self.app:
+                try:
+                    self.app.set_synthetic_input(False)
+                except Exception:
+                    pass
     
     def parse_key(self, key_str):
         if key_str is None:
@@ -808,6 +822,8 @@ class ScreenshotClickEngine:
         self.running = False
         self.thread = None
         self.lock = Lock()
+        # 防死机：单步（一次识别操作）最长等待时间，超过则自动停止当前任务
+        self.step_timeout_seconds = 300.0
         
         if sys.platform == "win32":
             base_dir = Path(os.environ.get("APPDATA", Path.home())) / "MiaoXiangQiJi"
@@ -1099,16 +1115,66 @@ class ScreenshotClickEngine:
             self.app.log_message("当前截图组没有任务")
             return
         self.running = True
+        self.stop_reason = ""
         self.current_index = 0
+        self._report_progress()   # 进度条归零
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
     
     def stop(self, log=True):
         was_running = self.running
         self.running = False
+        self.stop_reason = ""
         if log and was_running:
             self.app.log_message("截图流程已停止")
         self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
+    
+    def trigger_restart(self):
+        """按键触发：立刻中断当前执行，并让当前截图组从第一个任务重新开始。"""
+        threading.Thread(target=self._trigger_restart_worker, daemon=True).start()
+    
+    def _trigger_restart_worker(self):
+        group_name = self.active_group_name
+        if self.running:
+            self.running = False
+            worker = self.thread
+            if worker and worker.is_alive() and worker is not threading.current_thread():
+                worker.join(timeout=3.0)
+        self.current_index = 0
+        if not self.tasks:
+            self.app.log_message(f"按键触发：截图组 [{group_name}] 没有任务，已忽略")
+            self.app.after(0, lambda: self.app.update_screenshot_mode_status(
+                f"按键触发失败：组 [{group_name}] 为空"))
+            return
+        self.app.log_message(f"按键触发：截图组 [{group_name}] 从头开始执行")
+        self.start()
+    
+    def _check_step_timeout(self, started_at, task_number, total, display_name):
+        """单步超时（默认 5 分钟）自动停止，防止一直卡在等截图。"""
+        timeout = float(getattr(self, "step_timeout_seconds", 300.0) or 0)
+        if timeout <= 0 or (time.time() - started_at) < timeout:
+            return False
+        span = f"{timeout / 60:g} 分钟" if timeout >= 60 else f"{timeout:g} 秒"
+        reason = f"已超时自动停止：第 {task_number} 步「{display_name}」等待超过 {span}"
+        self.stop_reason = reason
+        self.app.log_message(
+            f"防死机保护：第 {task_number}/{total} 步「{display_name}」连续 {span}没有识别成功，"
+            f"已自动停止当前任务")
+        self.running = False
+        self.app.after(0, lambda: self.app.update_screenshot_mode_status(reason))
+        return True
+    
+    def _report_progress(self):
+        """把截图流程进度推送到主界面进度条（已完成步数 / 总步数）"""
+        try:
+            total = len(self.tasks)
+            done = max(0, min(self.current_index, total))
+            pct = (done / total * 100.0) if total else 0.0
+            detail = f"{done}/{total} 步" if total else ""
+            app = self.app
+            app.after(0, lambda p=pct, d=detail: app.update_progress(p, d))
+        except Exception:
+            pass
     
     def _run_loop(self):
         group_name = self.active_group_name
@@ -1132,15 +1198,23 @@ class ScreenshotClickEngine:
             if success:
                 with self.lock:
                     self.current_index += 1
+                self._report_progress()
                 self._interruptible_wait(0.3)
             else:
                 time.sleep(0.2)
         
         if self.current_index >= len(self.tasks) and self.tasks:
             self.app.log_message(f"截图流程组 [{group_name}] 已全部完成")
+            self.app.after(0, lambda: self.app.update_progress(
+                100, f"{len(self.tasks)}/{len(self.tasks)} 步"))
             self.app.after(0, lambda: self.app.update_screenshot_mode_status("全部任务已完成"))
         elif not self.running:
-            self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
+            reason = getattr(self, "stop_reason", "")
+            if reason:
+                self.stop_reason = ""
+                self.app.after(0, lambda r=reason: self.app.update_screenshot_mode_status(r))
+            else:
+                self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
     
     def run_single_task(self, group_name, task_index):
         """
@@ -1181,7 +1255,11 @@ class ScreenshotClickEngine:
         repeat_count = max(1, int(task.get("repeat_count", 1)))
         completed = 0
         require_disappear = False
+        display_name = task.get("display_name") or "截图任务"
+        step_started = time.time()
         while self.running and completed < repeat_count:
+            if self._check_step_timeout(step_started, task_number, total, display_name):
+                return False
             self.app.after(0, lambda n=task_number, t=total, c=completed, r=repeat_count:
             self.app.update_screenshot_mode_status(
                 f"等待第 {n}/{t} 个截图：已完成 {c}/{r} 次"))
@@ -1197,6 +1275,7 @@ class ScreenshotClickEngine:
             if not self._execute_match(task, match, task_number, total):
                 return False
             completed += 1
+            step_started = time.time()
             require_disappear = completed < repeat_count
             self.app.log_message(
                 f"第 {task_number}/{total} 个任务完成第 {completed}/{repeat_count} 次识别操作")
@@ -1214,6 +1293,10 @@ class ScreenshotClickEngine:
         start_time = time.time()
         
         while self.running:
+            # 防死机：分支即使设为无限等待，也不能真的无限等下去
+            if self._check_step_timeout(start_time, task_number, total,
+                                        task.get("display_name") or "条件分支"):
+                return False
             # 同时识别所有候选分支
             for branch in branches:
                 match = self._find_on_screen(branch)
@@ -1262,7 +1345,19 @@ class ScreenshotClickEngine:
         action = task.get("action", "左键单击")
         # 键盘类操作不移动鼠标，避免影响当前焦点位置
         if action in (KEY_ACTION, TEXT_ACTION):
-            if not self._perform_keyboard_action(task):
+            # 标记为软件自己发出的按键，避免触发“按键触发”监听
+            try:
+                self.app.set_synthetic_input(True)
+            except Exception:
+                pass
+            try:
+                ok = self._perform_keyboard_action(task)
+            finally:
+                try:
+                    self.app.set_synthetic_input(False)
+                except Exception:
+                    pass
+            if not ok:
                 return False
             self.app.log_message(
                 f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，"
@@ -2473,6 +2568,20 @@ class AutomationApp(tk.Tk):
             value = DEFAULT_SCHEDULER_COUNTDOWN
         self.scheduler_countdown = max(0, min(60, value))
         
+        # 按键触发（截图顺序识别点击）：软件自己发出的按键需要忽略
+        self.synthetic_input_depth = 0
+        self.trigger_listener = None
+        self.trigger_enabled = False
+        self.trigger_steps = []
+        self.trigger_pressed = set()
+        self.trigger_fired = False
+        # 单步防死机超时（秒），默认 5 分钟
+        try:
+            timeout_minutes = float(self.app_settings.get("screenshot_step_timeout_minutes", 5))
+        except Exception:
+            timeout_minutes = 5.0
+        self.screenshot_step_timeout_minutes = max(0.0, min(120.0, timeout_minutes))
+        
         # 在初始化时设置DPI感知
         if sys.platform == "win32":
             set_dpi_awareness()
@@ -2489,8 +2598,12 @@ class AutomationApp(tk.Tk):
         
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
-        self.geometry(f"{int(screen_w * 0.85)}x{int(screen_h * 0.85)}")
         self.minsize(900, 600)  # 设置最小尺寸
+        # 每次启动都铺满全屏（最大化），避免窗口偏小、内容被截断
+        self._apply_maximized_launch(screen_w, screen_h)
+        # 首帧渲染后再兜底一次（个别环境下 zoomed 需要窗口映射后才生效）
+        self.after(150, lambda: self._apply_maximized_launch(
+            self.winfo_screenwidth(), self.winfo_screenheight()))
         
         # 配置grid布局权重
         self.grid_rowconfigure(0, weight=1)
@@ -2518,12 +2631,16 @@ class AutomationApp(tk.Tk):
         
         # 截图顺序点击模式
         self.screenshot_engine = ScreenshotClickEngine(self)
+        self.screenshot_engine.step_timeout_seconds = self.screenshot_step_timeout_minutes * 60
         
         self.current_queue = []
         self.setup_ui()
         
         self.refresh_script_list()  # 添加这行初始化刷新
         self.setup_hotkeys()
+        # 恢复上次启用的按键触发
+        if self.app_settings.get("screenshot_trigger_enabled"):
+            self.after(800, self.enable_trigger_key)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.total_events = 0  # 队列总事件数
@@ -2562,6 +2679,14 @@ class AutomationApp(tk.Tk):
         截图流程说明：
         每张截图识别成功后的操作可选鼠标点击，也可选键盘按键（如 enter、ctrl+s、
         多个动作用逗号分隔）或输入文本（支持中文），不再只能点鼠标。
+
+        按键触发说明：
+        在“截图顺序识别点击”里填好触发键（如 ctrl+alt+1）并点“启用按键触发”后，
+        每按一次该键，当前截图组就会立刻从第一个任务重新执行；软件自己发出的
+        按键会被自动过滤，不会误触发。
+
+        防死机保护：
+        任一截图步骤连续 5 分钟没有识别成功，会自动停止当前任务（可在界面调整）。
         """
         Tooltip(self.help_icon, help_text)
         
@@ -3229,8 +3354,16 @@ class AutomationApp(tk.Tk):
         
         dialog = tk.Toplevel(self)
         dialog.title("编辑截图操作" if task_index is not None else "添加截图操作")
-        dialog.geometry("940x980")
-        dialog.minsize(760, 720)
+        # 窗口高度按屏幕可用高度自适应，避免按钮被挤到屏幕外
+        try:
+            screen_h = dialog.winfo_screenheight()
+            screen_w = dialog.winfo_screenwidth()
+        except Exception:
+            screen_h, screen_w = 1080, 1920
+        win_w = min(940, max(760, screen_w - 80))
+        win_h = min(980, max(700, screen_h - 120))
+        dialog.geometry(f"{win_w}x{win_h}")
+        dialog.minsize(min(720, win_w), min(620, win_h))
         dialog.transient(self)
         dialog.grab_set()
         
@@ -3238,6 +3371,10 @@ class AutomationApp(tk.Tk):
             self._set_window_icon(dialog)
         except Exception:
             pass
+        
+        # 底部按钮区先占位，窗口变小时也不会被内容挤掉
+        btns = ttk.Frame(dialog)
+        btns.pack(side=tk.BOTTOM, fill=tk.X, pady=8)
         
         ttk.Label(
             dialog,
@@ -3248,7 +3385,7 @@ class AutomationApp(tk.Tk):
         preview_frame = ttk.LabelFrame(dialog, text="截图内选点", padding=8)
         preview_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        max_w, max_h = 620, 330
+        max_w, max_h = 600, 260
         scale = min(max_w / original.width, max_h / original.height, 1.0)
         preview_size = (max(1, int(original.width * scale)), max(1, int(original.height * scale)))
         preview = original.resize(preview_size, Image.Resampling.LANCZOS)
@@ -3473,10 +3610,8 @@ class AutomationApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("设置错误", str(e), parent=dialog)
         
-        btns = ttk.Frame(dialog)
-        btns.pack(pady=10)
-        ttk.Button(btns, text="保存设置", command=confirm).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btns, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btns, text="保存设置", command=confirm).pack(side=tk.LEFT, padx=10, pady=4)
+        ttk.Button(btns, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=5, pady=4)
     
     def refresh_screenshot_group_controls(self):
         if not hasattr(self, "screenshot_group_combo"):
@@ -3544,14 +3679,23 @@ class AutomationApp(tk.Tk):
         """添加条件分支（增强版：可逐个设置每张截图的锚点与偏移，并支持超时跳过）"""
         dialog = tk.Toplevel(self)
         dialog.title("添加条件分支 - 编辑候选截图")
-        dialog.geometry("1200x750")
-        dialog.minsize(800, 600)
+        try:
+            screen_h = dialog.winfo_screenheight()
+            screen_w = dialog.winfo_screenwidth()
+        except Exception:
+            screen_h, screen_w = 1080, 1920
+        dialog.geometry(f"{min(1200, max(800, screen_w - 80))}x{min(750, max(600, screen_h - 140))}")
+        dialog.minsize(800, 560)
         dialog.transient(self)
         dialog.grab_set()
         try:
             self._set_window_icon(dialog)
         except:
             pass
+        
+        # 底部按钮先占位，保证按钮始终可见
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=8)
         
         branch_items = []
         
@@ -3687,10 +3831,7 @@ class AutomationApp(tk.Tk):
         
         listbox.bind("<Double-Button-1>", lambda e: edit_branch_item())
         
-        # ---- 底部按钮 ----
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-        
+        # ---- 底部按钮（btn_frame 已提前创建并占位） ----
         def confirm():
             if not branch_items:
                 messagebox.showerror("错误", "请至少添加一个候选截图", parent=dialog)
@@ -3748,14 +3889,22 @@ class AutomationApp(tk.Tk):
         # 创建临时对话框
         dialog = tk.Toplevel(self)
         dialog.title("设置分支截图锚点与偏移")
-        dialog.geometry("860x640")
-        dialog.minsize(700, 500)
+        try:
+            screen_h = dialog.winfo_screenheight()
+        except Exception:
+            screen_h = 1080
+        dialog.geometry(f"860x{min(700, max(560, screen_h - 160))}")
+        dialog.minsize(700, 520)
         dialog.transient(self)
         dialog.grab_set()
         try:
             self._set_window_icon(dialog)
         except:
             pass
+        
+        # 底部按钮先占位，避免窗口偏小时按钮被裁掉
+        btn_f = ttk.Frame(dialog)
+        btn_f.pack(side=tk.BOTTOM, fill=tk.X, pady=8)
         
         ttk.Label(dialog, text="点击截图预览选择基准点（红色十字），蓝色十字为最终操作点（含偏移）。").pack(pady=(10, 5))
         
@@ -3853,10 +4002,8 @@ class AutomationApp(tk.Tk):
         def cancel():
             dialog.destroy()
         
-        btn_f = ttk.Frame(dialog)
-        btn_f.pack(pady=10)
-        ttk.Button(btn_f, text="确定", style="Primary.TButton", command=ok).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_f, text="取消", command=cancel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_f, text="确定", style="Primary.TButton", command=ok).pack(side=tk.LEFT, padx=10, pady=4)
+        ttk.Button(btn_f, text="取消", command=cancel).pack(side=tk.LEFT, padx=5, pady=4)
         
         self.wait_window(dialog)
         return result
@@ -4010,44 +4157,18 @@ class AutomationApp(tk.Tk):
         parent.wait_window(dialog)
         return result[0]
     
-    def execute_single_script(self, script_name, repeat=1, speed=1):
-        try:
-            if not script_name:
-                self.log_message("执行失败：脚本名为空")
-                return
-            
-            events = self.script_manager.load_script(script_name)
-            
-            if not events:
-                self.log_message(f"脚本为空：{script_name}")
-                return
-            
-            self.total_events = len(events) * int(repeat)
-            self.processed_events = 0
-            self.after(0, lambda: self.progress.configure(value=0))
-            
-            self.player.current_script = script_name
-            self.status_label.config(text=f"执行脚本：{script_name}")
-            
-            self.player.play_events(
-                events,
-                speed=max(1, int(speed)),
-                repeat=max(1, int(repeat)),
-                progress_callback=self.update_total_progress
-            )
-            
-            self.status_label.config(text="脚本执行完成")
-            self.log_message(f"脚本执行完成：{script_name}")
-        
-        except Exception as e:
-            self.log_message(f"执行脚本失败：{script_name} - {str(e)}")
-    
     def update_total_progress(self, increment=1):
-        """原子操作更新进度"""
-        with threading.Lock():
+        """累加已处理事件并刷新总进度（线程安全，自动夹紧 0-100）"""
+        lock = getattr(self, "_progress_lock", None)
+        if lock is None:
+            lock = self._progress_lock = threading.Lock()
+        with lock:
             self.processed_events += increment
-            progress = (self.processed_events / self.total_events) * 100 if self.total_events > 0 else 0
-            self.after(0, lambda: self.progress.configure(value=progress))
+            total = max(0, int(getattr(self, "total_events", 0) or 0))
+            done = max(0, int(self.processed_events))
+            pct = (done / total * 100.0) if total else 0.0
+        detail = f"({min(done, total)}/{total})" if total else ""
+        self.update_progress(pct, detail)
     
     def create_script_group_dialog(self):
         scripts = self.script_manager.list_scripts()
@@ -4557,17 +4678,45 @@ class AutomationApp(tk.Tk):
         """按键释放时触发搜索"""
         self.refresh_script_list()
     
+    def _log_tag_for(self, message):
+        """按日志内容判定高亮级别：失败 > 警告 > 成功 > 关键操作 > 步骤 > 普通"""
+        text = str(message)
+        rules = (
+            ("err", ("错误", "失败", "异常", "出错", "无法", "未能", "已超时")),
+            ("warn", ("警告", "超时", "跳过", "取消", "未识别", "未找到",
+                      "已忽略", "防死机", "未匹配")),
+            ("ok", ("成功", "完成", "已启动", "已保存", "已恢复", "✅")),
+            ("key", ("定时任务", "按键触发", "截图流程", "倒计时", "已停止")),
+            ("step", ("执行脚本", "执行任务", "任务", "步骤", "开始执行", "开始运行")),
+        )
+        for tag, keywords in rules:
+            for kw in keywords:
+                if kw in text:
+                    return tag
+        return "msg"
+
     def log_message(self, message):
         timestamp = time.strftime("[%Y-%m-%d %H:%M:%S] ")
-        full_message = f"{timestamp}{message}\n"
-        
+        text = str(message)
+        tag = self._log_tag_for(text)
+
         def safe_log():
-            self.log_text.configure(state=tk.NORMAL)
-            self.log_text.insert(tk.END, full_message)
-            self.log_text.configure(state=tk.DISABLED)
-            self.log_text.see(tk.END)  # 滚动到底部
-            self.log_text.update_idletasks()  # 强制刷新界面
-        
+            try:
+                self.log_text.configure(state=tk.NORMAL)
+                self.log_text.insert(tk.END, timestamp, ("ts",))
+                self.log_text.insert(tk.END, f"{text}\n", (tag,))
+                # 日志过长时裁掉最旧的部分，避免长时间运行后界面变卡
+                try:
+                    lines = int(self.log_text.index("end-1c").split(".")[0])
+                    if lines > LOG_MAX_LINES:
+                        self.log_text.delete("1.0", f"{lines - LOG_MAX_LINES}.0")
+                except Exception:
+                    pass
+                self.log_text.configure(state=tk.DISABLED)
+                self.log_text.see(tk.END)  # 滚动到底部
+            except Exception:
+                pass
+
         self.after(0, safe_log)
     
     def _auto_ui_scale(self, event=None):
@@ -4580,164 +4729,250 @@ class AutomationApp(tk.Tk):
         except:
             pass
     
+    def _apply_maximized_launch(self, screen_w, screen_h):
+        """启动时让窗口铺满屏幕：优先最大化，失败则按屏幕尺寸铺满。"""
+        if getattr(self, "_maximize_done", False):
+            return
+        try:
+            self.state("zoomed")          # Windows：最大化，仍保留任务栏
+            self._maximize_done = True
+            return
+        except Exception:
+            pass
+        try:
+            self.attributes("-zoomed", True)   # 其它平台的 Tk 写法
+            self._maximize_done = True
+            return
+        except Exception:
+            pass
+        try:
+            self.geometry(f"{screen_w}x{screen_h}+0+0")
+        except Exception:
+            pass
+
     def setup_ui(self):
-        # 设置主题样式
+        # ---------- 主题样式 ----------
         self.style = ttk.Style()
         self.style.theme_use('clam')
-        
-        # 自定义颜色方案
         self.style.configure('TFrame', background='#f0f0f0')
         self.style.configure('TLabel', background='#f0f0f0', font=('微软雅黑', 9))
-        self.style.configure('TButton', font=('微软雅黑', 9), padding=6)
+        self.style.configure('TButton', font=('微软雅黑', 9), padding=5)
         self.style.configure('Primary.TButton', foreground='white', background='#0078d4')
         self.style.configure('Warning.TButton', foreground='white', background='#dc3545')
+        self.style.configure('TLabelframe', font=('微软雅黑', 9, 'bold'))
         self.style.map('Primary.TButton',
                        background=[('active', '#006cbd'), ('pressed', '#005a9e')])
         self.style.map('Warning.TButton',
                        background=[('active', '#c82333'), ('pressed', '#bd2130')])
         
-        # 主容器布局
-        main_frame = ttk.Frame(self)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 供主界面和“高级设置”对话框共用的变量
+        self.trigger_key_var = tk.StringVar(
+            value=str(self.app_settings.get("screenshot_trigger_key", "ctrl+alt+1")))
+        self.trigger_status_var = tk.StringVar(value="未启用")
+        self.screenshot_mode_status_var = tk.StringVar(value="未开始")
+        self.screenshot_timeout_var = tk.IntVar(
+            value=int(round(self.screenshot_step_timeout_minutes)))
         
-        # 顶部工具栏
-        toolbar_frame = ttk.Frame(main_frame)
-        toolbar_frame.pack(fill=tk.X, pady=(0, 10))
+        # ---------- 根容器（网格：顶栏 / 主体 / 日志 / 底部控制） ----------
+        root = ttk.Frame(self, padding=(10, 8, 10, 6))
+        root.pack(fill=tk.BOTH, expand=True)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=4, minsize=300)   # 主体两列
+        root.rowconfigure(2, weight=3, minsize=200)   # 执行日志（留足空间）
         
-        # 搜索框
-        search_frame = ttk.Frame(toolbar_frame)
-        search_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # ---------- 顶栏 ----------
+        toolbar = ttk.Frame(root)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         
-        self.search_entry = ttk.Entry(search_frame)
-        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(search_frame, text="搜索", style='Primary.TButton',
+        ttk.Label(toolbar, text="搜索：").pack(side=tk.LEFT)
+        self.search_entry = ttk.Entry(toolbar, width=30)
+        self.search_entry.pack(side=tk.LEFT, padx=(0, 4))
+        self.search_entry.insert(0, "输入脚本名称搜索...")
+        self.search_entry.configure(foreground='grey')
+        self.search_entry.bind("<FocusIn>", self.on_search_focus_in)
+        self.search_entry.bind("<FocusOut>", self.on_search_focus_out)
+        self.search_entry.bind("<KeyRelease>", self.on_search_key_release)
+        ttk.Button(toolbar, text="搜索", style='Primary.TButton',
                    command=self.refresh_script_list).pack(side=tk.LEFT)
         
-        # 控制按钮组
-        bottom_panel = ttk.Frame(main_frame)
-        bottom_panel.pack(fill=tk.X, pady=(10, 0))
+        # 右侧：常用入口
+        ttk.Button(toolbar, text="开始录制", style='Primary.TButton',
+                   command=self.safe_toggle_recording).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(toolbar, text="停止录制", style='Warning.TButton',
+                   command=self.safe_stop_recording).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(toolbar, text="定时任务",
+                   command=self.open_task_manager).pack(side=tk.RIGHT, padx=(12, 2))
+        ttk.Button(toolbar, text="组管理",
+                   command=self.open_group_manager_dialog).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(toolbar, text="截图高级设置",
+                   command=self.open_screenshot_advanced_dialog).pack(side=tk.RIGHT, padx=2)
         
-        # 创建控制按钮容器（新增）
-        control_buttons = ttk.Frame(bottom_panel)  # 修正：绑定到底部面板
-        control_buttons.pack(side=tk.LEFT, padx=5)  # 添加间距
+        self.help_icon = ttk.Label(toolbar, text="?", cursor="hand2",
+                                   font=('Arial', 12, 'bold'), foreground='#666666')
+        self.help_icon.pack(side=tk.RIGHT, padx=(10, 0))
         
-        ttk.Button(control_buttons, text="开始录制", style='Primary.TButton',
-                   command=self.safe_toggle_recording).pack(side=tk.LEFT, padx=2)
-        ttk.Button(control_buttons, text="停止录制", style='Warning.TButton',
-                   command=self.safe_stop_recording).pack(side=tk.LEFT, padx=2)
+        # ---------- 主体：三列（可用脚本 | 截图识别 | 执行队列） ----------
+        body = ttk.Frame(root)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=3, uniform="body")
+        body.columnconfigure(1, weight=4, uniform="body")
+        body.columnconfigure(2, weight=3, uniform="body")
+        body.rowconfigure(0, weight=1)
         
-        # 添加定时任务按钮
-        ttk.Button(control_buttons, text="定时任务", command=self.open_task_manager).pack(side=tk.LEFT, padx=2)
-        
-        # 主内容区域
-        content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 脚本列表面板
-        script_panel = ttk.LabelFrame(content_frame, text="可用脚本", padding=10)
-        script_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        # ---- 左列：可用脚本 / 组 ----
+        script_panel = ttk.LabelFrame(body, text="可用脚本 / 脚本组 / 混合组（双击执行）", padding=8)
+        script_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        script_panel.rowconfigure(0, weight=1)
+        script_panel.columnconfigure(0, weight=1)
         
         self.script_list = tk.Listbox(script_panel, selectmode=tk.SINGLE,
-                                      font=('微软雅黑', 10), bg='white')
-        self.script_list.pack(fill=tk.BOTH, expand=True)
+                                      font=('微软雅黑', 10), bg='white',
+                                      activestyle='none', exportselection=False)
+        self.script_list.grid(row=0, column=0, sticky="nsew")
+        script_scroll = ttk.Scrollbar(script_panel, orient=tk.VERTICAL,
+                                      command=self.script_list.yview)
+        script_scroll.grid(row=0, column=1, sticky="ns")
+        self.script_list.config(yscrollcommand=script_scroll.set)
         
         script_controls = ttk.Frame(script_panel)
-        script_controls.pack(fill=tk.X, pady=(5, 0))
+        script_controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Button(script_controls, text="重命名", command=self.rename_script).pack(side=tk.LEFT, padx=2)
         ttk.Button(script_controls, text="删除", style='Warning.TButton',
                    command=self.delete_script).pack(side=tk.LEFT, padx=2)
-        # ttk.Button(script_controls, text="设置图片", command=self.set_script_image).pack(side=tk.LEFT, padx=2)
+        ttk.Button(script_controls, text="新建脚本组",
+                   command=self.create_script_group_dialog).pack(side=tk.LEFT, padx=(10, 2))
+        ttk.Button(script_controls, text="新建混合组",
+                   command=self.create_mixed_group_dialog).pack(side=tk.LEFT, padx=2)
+        ttk.Button(script_controls, text="组操作…",
+                   command=self.open_group_manager_dialog).pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(
-            script_controls,
-            text="新建脚本组",
-            command=self.create_script_group_dialog
-        ).pack(side=tk.LEFT, padx=2)
-        
-        # 在 script_controls 中插入（建议放在“新建脚本组”和“脚本组入队”之间）
-        ttk.Button(
-            script_controls,
-            text="编辑脚本组",
-            command=self.edit_selected_script_group
-        ).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(
-            script_controls,
-            text="脚本组入队",
-            style="Primary.TButton",
-            command=self.add_selected_group_to_queue
-        ).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(
-            script_controls,
-            text="删除脚本组",
-            style="Warning.TButton",
-            command=self.delete_selected_script_group
-        ).pack(side=tk.LEFT, padx=2)
-        
-        # ---------- 混合组按钮 ----------
-        ttk.Button(
-            script_controls,
-            text="新建混合组",
-            command=self.create_mixed_group_dialog
-        ).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(
-            script_controls,
-            text="编辑混合组",
-            command=self.edit_mixed_group
-        ).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(
-            script_controls,
-            text="混合组入队",
-            style="Primary.TButton",
-            command=self.add_mixed_group_to_queue
-        ).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(
-            script_controls,
-            text="删除混合组",
-            style="Warning.TButton",
-            command=self.delete_mixed_group
-        ).pack(side=tk.LEFT, padx=2)
-        
-        # 队列面板
-        queue_panel = ttk.LabelFrame(content_frame, text="执行队列", padding=10)
-        queue_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        # ---- 中列：截图顺序识别点击（独占整列） ----
+        screenshot_frame = ttk.LabelFrame(body, text="第二种操作模式：截图顺序识别点击", padding=8)
+        screenshot_frame.grid(row=0, column=1, sticky="nsew", padx=6)
+        screenshot_frame.columnconfigure(0, weight=1)
+        screenshot_frame.rowconfigure(1, weight=1)
+
+        # ---- 右列：执行队列（独占整列） ----
+        queue_panel = ttk.LabelFrame(body, text="执行队列", padding=8)
+        queue_panel.grid(row=0, column=2, sticky="nsew")
+        queue_panel.rowconfigure(0, weight=1)
+        queue_panel.columnconfigure(0, weight=1)
         
         self.queue_list = tk.Listbox(queue_panel, selectmode=tk.SINGLE,
-                                     font=('微软雅黑', 10), bg='white')
-        self.queue_list.pack(fill=tk.BOTH, expand=True)
+                                     font=('微软雅黑', 10), bg='white',
+                                     activestyle='none', exportselection=False)
+        self.queue_list.grid(row=0, column=0, sticky="nsew")
+        queue_scroll = ttk.Scrollbar(queue_panel, orient=tk.VERTICAL,
+                                     command=self.queue_list.yview)
+        queue_scroll.grid(row=0, column=1, sticky="ns")
+        self.queue_list.config(yscrollcommand=queue_scroll.set)
         
         queue_controls = ttk.Frame(queue_panel)
-        queue_controls.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(queue_controls, text="添加队列", style='Primary.TButton',
+        queue_controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(queue_controls, text="添加选中脚本", style='Primary.TButton',
                    command=self.add_to_queue).pack(side=tk.LEFT, padx=2)
-        ttk.Button(queue_controls, text="移除队列", style='Warning.TButton',
-                   command=self.remove_from_queue).pack(side=tk.LEFT, padx=2)
-        ttk.Button(queue_controls, text="清空队列", style='Warning.TButton',
-                   command=self.clear_queue).pack(side=tk.LEFT, padx=2)
+        ttk.Button(queue_controls, text="截图组入队",
+                   command=self.add_screenshot_group_to_queue).pack(side=tk.LEFT, padx=2)
+        ttk.Button(queue_controls, text="移除", style='Warning.TButton',
+                   command=self.remove_from_queue).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(queue_controls, text="清空", style='Warning.TButton',
+                   command=self.clear_queue).pack(side=tk.RIGHT, padx=2)
         
-        ttk.Button(
-            queue_controls,
-            text="截图组入队",
-            style="Primary.TButton",
-            command=self.add_screenshot_group_to_queue
-        ).pack(side=tk.LEFT, padx=2)
+        group_bar = ttk.Frame(screenshot_frame)
+        group_bar.grid(row=0, column=0, sticky="ew")
+        ttk.Label(group_bar, text="截图组：").pack(side=tk.LEFT)
+        self.screenshot_group_var = tk.StringVar(value=self.screenshot_engine.active_group_name)
+        self.screenshot_group_combo = ttk.Combobox(
+            group_bar, textvariable=self.screenshot_group_var,
+            values=self.screenshot_engine.list_groups(), state="readonly", width=22)
+        self.screenshot_group_combo.pack(side=tk.LEFT, padx=(0, 6))
+        self.screenshot_group_combo.bind("<<ComboboxSelected>>", self.on_screenshot_group_changed)
+        ttk.Button(group_bar, text="组管理…", command=self.open_screenshot_advanced_dialog).pack(side=tk.LEFT, padx=2)
         
-        # 底部控制面板
-        bottom_panel = ttk.Frame(main_frame)
-        bottom_panel.pack(fill=tk.X, pady=(10, 0))
+        # 任务列表
+        self.screenshot_task_list = tk.Listbox(screenshot_frame, height=5,
+                                               font=('微软雅黑', 9), bg='white',
+                                               activestyle='none', exportselection=False)
+        self.screenshot_task_list.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        shot_scroll = ttk.Scrollbar(screenshot_frame, orient=tk.VERTICAL,
+                                    command=self.screenshot_task_list.yview)
+        shot_scroll.grid(row=1, column=1, sticky="ns", pady=(6, 0))
+        self.screenshot_task_list.config(yscrollcommand=shot_scroll.set)
+        self.screenshot_task_list.bind("<Double-Button-1>", self.edit_selected_screenshot_task)
         
-        # 进度条
-        self.progress = ttk.Progressbar(bottom_panel, orient=tk.HORIZONTAL, mode='determinate')
-        self.progress.pack(fill=tk.X, pady=(0, 5))  # 改为pack
+        # 状态 + 按键触发状态（一行）
+        status_line = ttk.Frame(screenshot_frame)
+        status_line.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(status_line, text="状态：").pack(side=tk.LEFT)
+        ttk.Label(status_line, textvariable=self.screenshot_mode_status_var,
+                  font=("微软雅黑", 9, "bold"), foreground="#0b6b3a").pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(status_line, text="按键触发：").pack(side=tk.LEFT)
+        ttk.Label(status_line, textvariable=self.trigger_status_var,
+                  foreground="#1f6fa8").pack(side=tk.LEFT)
         
-        # 执行控制
+        # 操作按钮（两行，避免挤成一长条）
+        shot_ops = ttk.Frame(screenshot_frame)
+        shot_ops.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(shot_ops, text="添加截图", command=self.add_screenshot_task).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_ops, text="编辑操作", command=self.edit_screenshot_task).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_ops, text="添加条件分支", command=self.add_screenshot_branch_task).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_ops, text="上移", width=4,
+                   command=self.move_screenshot_task_up).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(shot_ops, text="下移", width=4,
+                   command=self.move_screenshot_task_down).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(shot_ops, text="删除", width=4, style='Warning.TButton',
+                   command=self.remove_screenshot_task).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(shot_ops, text="清空", width=4, style='Warning.TButton',
+                   command=self.clear_screenshot_tasks).pack(side=tk.RIGHT, padx=2)
+        
+        shot_run = ttk.Frame(screenshot_frame)
+        shot_run.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(shot_run, text="▶ 开始按顺序识别并点击", style='Primary.TButton',
+                   command=self.start_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_run, text="■ 停止识别", style='Warning.TButton',
+                   command=self.stop_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_run, text="入队单个任务",
+                   command=self.add_single_screenshot_task_to_queue).pack(side=tk.RIGHT, padx=2)
+        
+        # ---------- 执行日志（占据剩余空间，不再被挤小） ----------
+        log_panel = ttk.LabelFrame(root, text="执行日志", padding=8)
+        log_panel.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        log_panel.rowconfigure(0, weight=1)
+        log_panel.columnconfigure(0, weight=1)
+        
+        self.log_text = tk.Text(log_panel, height=8, font=('微软雅黑', 9),
+                                bg='white', wrap=tk.WORD, state=tk.DISABLED)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_scroll = ttk.Scrollbar(log_panel, orient=tk.VERTICAL, command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        # 日志高亮配色：时间戳灰、成功绿、失败红、警告橙、步骤蓝、关键操作紫
+        self.log_text.tag_configure("ts", foreground="#8c8c8c")
+        self.log_text.tag_configure("msg", foreground="#222222")
+        self.log_text.tag_configure("ok", foreground="#0b6b3a",
+                                    font=("微软雅黑", 9, "bold"))
+        self.log_text.tag_configure("err", foreground="#c0392b", background="#fdeceb",
+                                    font=("微软雅黑", 9, "bold"))
+        self.log_text.tag_configure("warn", foreground="#a35b00",
+                                    font=("微软雅黑", 9, "bold"))
+        self.log_text.tag_configure("step", foreground="#1f6fa8")
+        self.log_text.tag_configure("key", foreground="#6a1b9a",
+                                    font=("微软雅黑", 9, "bold"))
+        
+        # ---------- 底部：进度 + 执行控制 ----------
+        bottom_panel = ttk.Frame(root)
+        bottom_panel.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        
+        progress_row = ttk.Frame(bottom_panel)
+        progress_row.pack(fill=tk.X, pady=(0, 6))
+        self.progress = ttk.Progressbar(progress_row, orient=tk.HORIZONTAL,
+                                        mode='determinate', maximum=100)
+        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.progress_label = ttk.Label(progress_row, text="就绪", width=20, anchor="e")
+        self.progress_label.pack(side=tk.RIGHT, padx=(8, 0))
+        
         exec_controls = ttk.Frame(bottom_panel)
         exec_controls.pack(fill=tk.X)
-        
         ttk.Button(exec_controls, text="▶ 开始执行", style='Primary.TButton',
                    command=self.start_execution).pack(side=tk.LEFT, padx=2)
         ttk.Button(exec_controls, text="■ 停止", style='Warning.TButton',
@@ -4747,29 +4982,6 @@ class AutomationApp(tk.Tk):
         ttk.Button(exec_controls, text="▶ 继续",
                    command=self.safe_resume_execution).pack(side=tk.LEFT, padx=2)
         
-        # 创建帮助图标
-        self.help_icon = ttk.Label(
-            self,
-            text="?",
-            cursor="hand2",
-            font=("Arial", 18, "bold"),
-            foreground="#666666"
-        )
-        # 添加以下配置代码
-        self.help_icon.configure(
-            background='#f0f0f0',
-            foreground='#666666',
-            font=('Arial', 14, 'bold')  # 修正字体大小
-        )
-        self.help_icon.place(
-            relx=1.0,
-            rely=0.0,
-            anchor='ne',
-            x=-15,  # 调整x偏移量
-            y=10
-        )
-        
-        # 设置面板
         settings_frame = ttk.Frame(exec_controls)
         settings_frame.pack(side=tk.RIGHT)
         ttk.Label(settings_frame, text="速度倍数:").pack(side=tk.LEFT)
@@ -4778,163 +4990,13 @@ class AutomationApp(tk.Tk):
         self.speed_combobox.pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(settings_frame, text="自动继续", variable=self.auto_continue_var).pack(side=tk.LEFT)
         
-        # 图像检测设置
-        # image_frame = ttk.Frame(exec_controls)
-        # image_frame.pack(side=tk.RIGHT, padx=10)
-        # ttk.Label(image_frame, text="检测窗口:").pack(side=tk.LEFT)
-        # self.window_entry = ttk.Entry(image_frame, width=20)
-        # self.window_entry.pack(side=tk.LEFT, padx=5)
-        # self.window_entry.insert(0, "整个屏幕")
-        
-        # ---------- 截图点击模式 ----------
-        screenshot_frame = ttk.LabelFrame(
-            main_frame,
-            text="第二种操作模式：截图顺序识别点击",
-            padding=10
-        )
-        
-        screenshot_frame.pack(
-            fill=tk.X,
-            padx=5,
-            pady=5
-        )
-        
-        group_bar = ttk.Frame(screenshot_frame)
-        group_bar.pack(fill=tk.X, padx=5, pady=(2, 5))
-        ttk.Label(group_bar, text="截图组：").pack(side=tk.LEFT)
-        self.screenshot_group_var = tk.StringVar(value=self.screenshot_engine.active_group_name)
-        self.screenshot_group_combo = ttk.Combobox(
-            group_bar, textvariable=self.screenshot_group_var,
-            values=self.screenshot_engine.list_groups(), state="readonly", width=24
-        )
-        self.screenshot_group_combo.pack(side=tk.LEFT, padx=(0, 8))
-        self.screenshot_group_combo.bind("<<ComboboxSelected>>", self.on_screenshot_group_changed)
-        ttk.Button(group_bar, text="新增组", command=self.add_screenshot_group).pack(side=tk.LEFT, padx=2)
-        ttk.Button(group_bar, text="重命名", command=self.rename_screenshot_group).pack(side=tk.LEFT, padx=2)
-        ttk.Button(group_bar, text="复制组", command=self.duplicate_screenshot_group).pack(side=tk.LEFT, padx=2)
-        ttk.Button(group_bar, text="删除组", command=self.delete_screenshot_group).pack(side=tk.LEFT, padx=2)
-        
-        self.screenshot_task_list = tk.Listbox(
-            screenshot_frame,
-            height=6
-        )
-        
-        self.screenshot_task_list.pack(
-            fill=tk.X,
-            padx=5,
-            pady=5
-        )
-        
-        # 双击截图任务直接进入编辑
-        self.screenshot_task_list.bind("<Double-Button-1>", self.edit_selected_screenshot_task)
-        
-        ttk.Label(
-            screenshot_frame,
-            text="普通任务严格按顺序执行；重复次数中的每一次都会重新等待截图出现。条件分支会同时识别多张候选截图，命中任意一张后执行并进入下一任务。"
-                 "识别后的操作除了鼠标点击，还可设为键盘按键（如 enter、ctrl+s、tab, enter）或输入文本。",
-            wraplength=1100
-        ).pack(anchor=tk.W, padx=5, pady=(0, 3))
-        
-        self.screenshot_mode_status_var = tk.StringVar(value="未启动")
-        ttk.Label(
-            screenshot_frame,
-            textvariable=self.screenshot_mode_status_var,
-            font=("微软雅黑", 9, "bold")
-        ).pack(anchor=tk.W, padx=5, pady=(0, 3))
-        
-        screenshot_btn_frame = ttk.Frame(screenshot_frame)
-        screenshot_btn_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="添加截图",
-            command=self.add_screenshot_task
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="编辑操作",
-            command=self.edit_screenshot_task
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="添加条件分支",
-            command=self.add_screenshot_branch_task
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="上移",
-            command=self.move_screenshot_task_up
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="下移",
-            command=self.move_screenshot_task_down
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="删除",
-            command=self.remove_screenshot_task
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="清空",
-            command=self.clear_screenshot_tasks
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="入队单个任务",
-            command=self.add_single_screenshot_task_to_queue
-        ).pack(side=tk.LEFT, padx=3)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="▶ 开始按顺序识别并点击",
-            command=self.start_screenshot_click_mode
-        ).pack(side=tk.LEFT, padx=8)
-        
-        ttk.Button(
-            screenshot_btn_frame,
-            text="■ 停止截图识别",
-            command=self.stop_screenshot_click_mode
-        ).pack(side=tk.LEFT, padx=3)
-        
-        # 日志面板
-        log_panel = ttk.LabelFrame(main_frame, text="执行日志", padding=10)
-        log_panel.pack(fill=tk.BOTH, expand=False, padx=5, pady=5)
-        
-        self.log_text = tk.Text(log_panel, height=6, font=('微软雅黑', 9),
-                                bg='white', wrap=tk.WORD, state=tk.DISABLED)
-        scrollbar = ttk.Scrollbar(log_panel, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        
-        # 使用pack布局，确保填充和扩展
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # 配置grid权重
-        content_frame.pack_configure(fill=tk.BOTH, expand=True)
-        script_panel.pack_configure(fill=tk.BOTH, expand=True)
-        queue_panel.pack_configure(fill=tk.BOTH, expand=True)
-        
-        # 状态栏
+        # ---------- 状态栏 ----------
         status_bar = ttk.Frame(self, relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.status_label = ttk.Label(status_bar, text="就绪", anchor=tk.W)
         self.status_label.pack(side=tk.LEFT, padx=5)
         
-        # 帮助按钮样式调整
-        self.help_icon.configure(background='#f0f0f0', foreground='#666666',
-                                 font=('Arial', 14, 'bold'))
-        self.help_icon.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=10)
-        
-        # 绑定事件
+        # ---------- 事件绑定 ----------
         self.script_list.bind('<Double-Button-1>', self.on_script_double_click)
         self.queue_list.bind('<ButtonPress-1>', self.on_drag_start)
         self.queue_list.bind('<B1-Motion>', self.on_drag_motion)
@@ -4942,7 +5004,122 @@ class AutomationApp(tk.Tk):
         
         self.refresh_script_list()
         self.refresh_screenshot_task_list()
+
+    # 兼容旧代码：部分逻辑会调用此方法显示提示
+    def show_ui_hint(self, text):
+        if hasattr(self, "status_label"):
+            self.status_label.config(text=text)
+
+    # ---------- 二次打开的窗口 ----------
+    def open_group_manager_dialog(self):
+        """脚本组 / 混合组管理（从主界面剥离的次要操作）"""
+        win = getattr(self, "group_manager_dialog", None)
+        try:
+            if win is not None and win.winfo_exists():
+                win.deiconify()
+                win.lift()
+                return
+        except Exception:
+            pass
+        
+        dialog = tk.Toplevel(self)
+        dialog.title("脚本组 / 混合组管理")
+        dialog.geometry("560x330")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        self._set_window_icon(dialog)
+        self.group_manager_dialog = dialog
+        
+        ttk.Label(dialog, text="操作对象：左侧“可用脚本”列表里当前选中的组",
+                  foreground="gray").pack(anchor="w", padx=14, pady=(12, 6))
+        
+        script_frame = ttk.LabelFrame(dialog, text="脚本组", padding=10)
+        script_frame.pack(fill=tk.X, padx=12, pady=4)
+        srow = ttk.Frame(script_frame)
+        srow.pack(fill=tk.X)
+        ttk.Button(srow, text="新建脚本组", command=self.create_script_group_dialog).pack(side=tk.LEFT, padx=2)
+        ttk.Button(srow, text="编辑", command=self.edit_selected_script_group).pack(side=tk.LEFT, padx=2)
+        ttk.Button(srow, text="入队", style="Primary.TButton",
+                   command=self.add_selected_group_to_queue).pack(side=tk.LEFT, padx=2)
+        ttk.Button(srow, text="删除", style="Warning.TButton",
+                   command=self.delete_selected_script_group).pack(side=tk.LEFT, padx=2)
+        
+        mixed_frame = ttk.LabelFrame(dialog, text="混合组", padding=10)
+        mixed_frame.pack(fill=tk.X, padx=12, pady=4)
+        mrow = ttk.Frame(mixed_frame)
+        mrow.pack(fill=tk.X)
+        ttk.Button(mrow, text="新建混合组", command=self.create_mixed_group_dialog).pack(side=tk.LEFT, padx=2)
+        ttk.Button(mrow, text="编辑", command=self.edit_mixed_group).pack(side=tk.LEFT, padx=2)
+        ttk.Button(mrow, text="入队", style="Primary.TButton",
+                   command=self.add_mixed_group_to_queue).pack(side=tk.LEFT, padx=2)
+        ttk.Button(mrow, text="删除", style="Warning.TButton",
+                   command=self.delete_mixed_group).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(dialog, text="关闭", command=dialog.destroy).pack(pady=12)
     
+    def open_screenshot_advanced_dialog(self):
+        """截图识别高级设置：组管理 + 按键触发 + 防死机超时"""
+        win = getattr(self, "screenshot_advanced_dialog", None)
+        try:
+            if win is not None and win.winfo_exists():
+                win.deiconify()
+                win.lift()
+                return
+        except Exception:
+            pass
+        
+        dialog = tk.Toplevel(self)
+        dialog.title("截图识别高级设置")
+        dialog.geometry("620x420")
+        dialog.transient(self)
+        self._set_window_icon(dialog)
+        self.screenshot_advanced_dialog = dialog
+        
+        # 截图组管理
+        group_frame = ttk.LabelFrame(dialog, text="截图组管理", padding=10)
+        group_frame.pack(fill=tk.X, padx=12, pady=(12, 6))
+        ttk.Label(group_frame, text="当前组：").pack(side=tk.LEFT)
+        ttk.Label(group_frame, textvariable=self.screenshot_group_var,
+                  font=("微软雅黑", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(group_frame, text="新增组", command=self.add_screenshot_group).pack(side=tk.LEFT, padx=2)
+        ttk.Button(group_frame, text="重命名", command=self.rename_screenshot_group).pack(side=tk.LEFT, padx=2)
+        ttk.Button(group_frame, text="复制组", command=self.duplicate_screenshot_group).pack(side=tk.LEFT, padx=2)
+        ttk.Button(group_frame, text="删除组", style="Warning.TButton",
+                   command=self.delete_screenshot_group).pack(side=tk.LEFT, padx=2)
+        
+        # 按键触发
+        trigger_frame = ttk.LabelFrame(dialog, text="按键触发", padding=10)
+        trigger_frame.pack(fill=tk.X, padx=12, pady=6)
+        trow = ttk.Frame(trigger_frame)
+        trow.pack(fill=tk.X)
+        ttk.Label(trow, text="触发按键：").pack(side=tk.LEFT)
+        trigger_combo = ttk.Combobox(
+            trow, textvariable=self.trigger_key_var, width=16,
+            values=["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3", "ctrl+shift+f9",
+                    "f8", "f9", "enter", "ctrl+enter"])
+        trigger_combo.pack(side=tk.LEFT, padx=(0, 6))
+        btn_text = "停用按键触发" if getattr(self, "trigger_enabled", False) else "启用按键触发"
+        self.trigger_toggle_btn = ttk.Button(trow, text=btn_text, command=self.toggle_trigger_key)
+        self.trigger_toggle_btn.pack(side=tk.LEFT, padx=2)
+        ttk.Label(trigger_frame, textvariable=self.trigger_status_var,
+                  foreground="#1f6fa8").pack(anchor="w", pady=(6, 0))
+        ttk.Label(trigger_frame,
+                  text="按一次设定键，当前截图组立刻从第一个任务重新执行；软件自身发出的按键不会误触发。\n"
+                       "单个按键（如 enter）在任何地方按下都会触发，建议使用组合键。",
+                  foreground="gray", justify=tk.LEFT).pack(anchor="w", pady=(4, 0))
+        
+        # 防死机超时
+        timeout_frame = ttk.LabelFrame(dialog, text="防死机保护", padding=10)
+        timeout_frame.pack(fill=tk.X, padx=12, pady=6)
+        orow = ttk.Frame(timeout_frame)
+        orow.pack(fill=tk.X)
+        ttk.Label(orow, text="单步连续").pack(side=tk.LEFT)
+        ttk.Spinbox(orow, from_=0, to=120, width=5,
+                    textvariable=self.screenshot_timeout_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(orow, text="分钟未识别成功则自动停止当前任务（0 = 关闭）").pack(side=tk.LEFT)
+        ttk.Button(orow, text="保存", command=self._apply_screenshot_timeout_from_ui).pack(side=tk.LEFT, padx=8)
+        
+        ttk.Button(dialog, text="关闭", command=dialog.destroy).pack(pady=12)
     def show_group_notice_dialog(self, group_name, notice):
         # 检测主窗口是否最小化
         was_iconic = self.wm_state() == 'iconic'
@@ -5035,7 +5212,7 @@ class AutomationApp(tk.Tk):
         self.total_events = self.calculate_total_events()
         
         # 重置进度条
-        self.after(0, lambda: self.progress.configure(value=0))
+        self.update_progress(0, f"(0/{self.total_events})" if self.total_events else "")
         
         self.status_label.config(text="准备执行")
         
@@ -5271,12 +5448,24 @@ class AutomationApp(tk.Tk):
                 continue
             self.script_list.insert(tk.END, script)
     
-    def update_progress(self, value):
-        """通用的进度更新方法"""
+    def update_progress(self, value, detail=""):
+        """通用进度更新：value 取 0-100，自动夹紧并显示百分比与进度明细"""
         
         def safe_update():
-            self.progress['value'] = min(value, 100)
-            self.progress.update()
+            try:
+                v = float(value)
+            except Exception:
+                v = 0.0
+            v = max(0.0, min(100.0, v))
+            try:
+                self.progress['value'] = v
+                if hasattr(self, "progress_label"):
+                    text = f"{v:.0f}%"
+                    if detail:
+                        text += f" {detail}"
+                    self.progress_label.config(text=text)
+            except Exception:
+                pass
         
         self.after(0, safe_update)
     
@@ -6085,6 +6274,7 @@ class AutomationApp(tk.Tk):
         
         if not self.player.should_stop:
             self.log_message("✅ 所有脚本执行完毕")
+            self.update_progress(100, f"({self.total_events}/{self.total_events})")
             self.completed = True
             self.show_completion_dialog()
             self.image_matcher.stop()
@@ -6106,14 +6296,25 @@ class AutomationApp(tk.Tk):
     def execute_single_script(self, script_name, repeat, speed):
         try:
             events = self.script_manager.load_script(script_name)
-            script_event_count = len(events) * repeat
+            if not events:
+                self.log_message(f"脚本为空：{script_name}")
+                return
+            
+            repeat = max(1, int(repeat))
+            # 进度基准只统计本脚本自身的事件数（避免进度条瞬间冲到 100%）
+            self.total_events = len(events) * repeat
+            self.processed_events = 0
+            self.update_progress(0, f"(0/{self.total_events})")
             
             # 设置当前脚本名称
             self.player.current_script = script_name
             
-            # 执行脚本
+            # 执行脚本：每个事件回调 1，与 total_events 口径一致
             self.player.play_events(events, speed, repeat,
-                                    lambda increment: self.update_total_progress(increment * script_event_count))
+                                    lambda increment: self.update_total_progress(increment))
+            
+            if not self.player.should_stop:
+                self.update_progress(100, f"({self.total_events}/{self.total_events})")
         
         except Exception as e:
             self.log_message(f"执行失败: {str(e)}")
@@ -6170,9 +6371,13 @@ class AutomationApp(tk.Tk):
         self.total_events = 0
         self.image_matcher.stop()
         
-        self.after(0, lambda: self.progress.configure(value=0))
+        self.update_progress(0)
         self.log_message("执行已完全停止")
         self.status_label.config(text="已停止")
+        try:
+            self.after(0, lambda: self.progress_label.config(text="已停止"))
+        except Exception:
+            pass
         
         # 强制终止可能卡住的线程
         if hasattr(self.player, '_thread') and self.player._thread.is_alive():
@@ -6194,8 +6399,175 @@ class AutomationApp(tk.Tk):
         self.after(0, self.progress.update)
     
     def open_task_manager(self):
-        """打开定时任务管理窗口"""
-        TaskManagementDialog(self, self.scheduler)
+        """打开定时任务管理窗口（只允许同时存在一个）"""
+        win = getattr(self, "task_manager_dialog", None)
+        try:
+            if win is not None and win.winfo_exists():
+                win.deiconify()
+                win.lift()
+                win.focus_set()
+                return
+        except Exception:
+            pass
+        self.task_manager_dialog = TaskManagementDialog(self, self.scheduler)
+    
+    # ---------- 按键触发（截图顺序识别点击） ----------
+    def set_synthetic_input(self, active):
+        """标记/取消标记“软件自己发出的按键”，用于过滤按键触发监听。"""
+        if active:
+            self.synthetic_input_depth = getattr(self, "synthetic_input_depth", 0) + 1
+        else:
+            self.synthetic_input_depth = max(0, getattr(self, "synthetic_input_depth", 0) - 1)
+        # 钩子回调可能稍有延迟，留一点静默时间，避免自己发出的按键误触发
+        self.synthetic_input_until = time.time() + 0.3
+    
+    def _trigger_key_token(self, key):
+        """把 pynput 按键转成统一的比较用名称（左右修饰键合并）。"""
+        try:
+            ch = key.char
+            if ch:
+                return ch.lower()
+        except Exception:
+            pass
+        name = str(key)
+        if name.startswith("Key."):
+            name = name[4:]
+        mapping = {
+            "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+            "shift_l": "shift", "shift_r": "shift",
+            "alt_l": "alt", "alt_r": "alt", "alt_gr": "alt",
+            "cmd_l": "cmd", "cmd_r": "cmd",
+        }
+        return mapping.get(name, name.lower())
+    
+    def _trigger_key_listener(self):
+        from pynput import keyboard as kb
+        
+        def on_press(key):
+            if not self.trigger_enabled:
+                return
+            # 软件自身模拟的按键不算
+            if getattr(self, "synthetic_input_depth", 0) > 0:
+                return
+            if time.time() < getattr(self, "synthetic_input_until", 0):
+                return
+            token = self._trigger_key_token(key)
+            self.trigger_pressed.add(token)
+            if self.trigger_fired:
+                return
+            for step in self.trigger_steps:
+                if set(step).issubset(self.trigger_pressed):
+                    self.trigger_fired = True
+                    self.after(0, self._on_trigger_key_fired)
+                    break
+        
+        def on_release(key):
+            token = self._trigger_key_token(key)
+            self.trigger_pressed.discard(token)
+            if not any(set(step).issubset(self.trigger_pressed) for step in self.trigger_steps):
+                self.trigger_fired = False
+        
+        return kb.Listener(on_press=on_press, on_release=on_release)
+    
+    def enable_trigger_key(self):
+        if not hasattr(self, "trigger_key_var"):
+            return
+        combo = self.trigger_key_var.get().strip()
+        if not combo:
+            messagebox.showerror("按键触发", "请先填写触发按键，例如 ctrl+alt+1 或 f8", parent=self)
+            return
+        steps = parse_key_sequence(combo)
+        if not steps:
+            messagebox.showerror(
+                "按键触发",
+                f"无法识别按键「{combo}」。\n可用写法：enter、f8、ctrl+alt+1、ctrl+shift+s",
+                parent=self)
+            return
+        # 只支持“同时按下”的组合，取第一步
+        tokens = []
+        for key in steps[0]:
+            tokens.append(self._trigger_key_token(key))
+        if not tokens:
+            messagebox.showerror("按键触发", "请填写有效的触发按键", parent=self)
+            return
+        self.trigger_steps = [tokens]
+        self.trigger_pressed = set()
+        self.trigger_fired = False
+        self.trigger_enabled = True
+        try:
+            if self.trigger_listener is not None:
+                self.trigger_listener.stop()
+        except Exception:
+            pass
+        self.trigger_listener = self._trigger_key_listener()
+        self.trigger_listener.start()
+        if len(tokens) == 1:
+            self.log_message(
+                f"按键触发已启用：{combo}（单个按键在任何地方按下都会触发，建议用组合键）")
+        else:
+            self.log_message(f"按键触发已启用：{combo}")
+        if hasattr(self, "trigger_toggle_btn"):
+            self.trigger_toggle_btn.config(text="停用按键触发")
+        if hasattr(self, "trigger_status_var"):
+            self.trigger_status_var.set(f"已启用：{combo}（按一次即从头执行）")
+        self.app_settings["screenshot_trigger_key"] = combo
+        self.app_settings["screenshot_trigger_enabled"] = True
+        save_app_settings(self.app_settings)
+    
+    def disable_trigger_key(self):
+        self.trigger_enabled = False
+        try:
+            if self.trigger_listener is not None:
+                self.trigger_listener.stop()
+        except Exception:
+            pass
+        self.trigger_listener = None
+        if hasattr(self, "trigger_toggle_btn"):
+            self.trigger_toggle_btn.config(text="启用按键触发")
+        if hasattr(self, "trigger_status_var"):
+            self.trigger_status_var.set("未启用")
+        self.log_message("按键触发已停用")
+        self.app_settings["screenshot_trigger_enabled"] = False
+        save_app_settings(self.app_settings)
+    
+    def toggle_trigger_key(self):
+        if getattr(self, "trigger_enabled", False):
+            self.disable_trigger_key()
+        else:
+            self.enable_trigger_key()
+    
+    def _on_trigger_key_fired(self):
+        combo = self.trigger_key_var.get().strip() if hasattr(self, "trigger_key_var") else ""
+        engine = self.screenshot_engine
+        group_name = engine.active_group_name
+        self.log_message(f"检测到按键 [{combo}]：截图组 [{group_name}] 从头开始执行")
+        self.update_screenshot_mode_status(f"按键触发：从头执行 [{group_name}]")
+        engine.trigger_restart()
+    
+    def set_screenshot_step_timeout(self, minutes):
+        """设置单步防死机超时（分钟，0 = 关闭保护）。"""
+        try:
+            minutes = float(minutes)
+        except Exception:
+            minutes = 5.0
+        minutes = max(0.0, min(120.0, minutes))
+        self.screenshot_step_timeout_minutes = minutes
+        self.screenshot_engine.step_timeout_seconds = minutes * 60
+        self.app_settings["screenshot_step_timeout_minutes"] = minutes
+        save_app_settings(self.app_settings)
+        if minutes <= 0:
+            self.log_message("已关闭单步超时保护")
+        else:
+            self.log_message(f"单步超时保护：{minutes:g} 分钟未成功则自动停止当前任务")
+    
+    def _apply_screenshot_timeout_from_ui(self):
+        try:
+            minutes = int(self.screenshot_timeout_var.get())
+        except Exception:
+            minutes = 5
+        minutes = max(0, min(120, minutes))
+        self.screenshot_timeout_var.set(minutes)
+        self.set_screenshot_step_timeout(minutes)
     
     def set_scheduler_countdown(self, value):
         """设置定时任务触发前的默认倒计时秒数（0 = 不提示）。"""
@@ -6212,6 +6584,12 @@ class AutomationApp(tk.Tk):
     
     def on_close(self):
         """确保程序完全退出"""
+        # 停止按键触发监听
+        try:
+            if getattr(self, "trigger_listener", None) is not None:
+                self.trigger_listener.stop()
+        except Exception:
+            pass
         # 停止定时调度器
         self.scheduler.stop()
         # 同步保存定时任务

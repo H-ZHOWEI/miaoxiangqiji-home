@@ -110,61 +110,76 @@
   }
 </style>
 </head>
+
+
+
 <body>
 <div class="layout">
   <nav class="toc">
     <div class="toc-title">目录</div>
     <div class="toc">
 <ul>
-<li><a href="#1">1. 这个软件是干什么的</a></li>
-<li><a href="#2">2. 安装与启动</a><ul>
+<li><a href="#1">1. 这个软件是干什么的</a>
+</li>
+<li><a href="#2">2. 安装与启动</a>
+<ul>
 <li><a href="#21">2.1 没有安装过程</a></li>
 <li><a href="#22">2.2 第一次打开可能遇到的两件事</a></li>
 <li><a href="#23">2.3 主界面长什么样</a></li>
 </ul>
 </li>
-<li><a href="#3">3. 五分钟上手：录第一个脚本</a><ul>
-<li><a href="#1_1">第 1 步：开始录制</a></li>
-<li><a href="#2_1">第 2 步：正常做一遍你要它做的事</a></li>
-<li><a href="#3_1">第 3 步：停止并保存</a></li>
-<li><a href="#4">第 4 步：回放</a></li>
+<li><a href="#3">3. 五分钟上手：录第一个脚本</a>
+<ul>
+<li><a href="#第1步开始录制">第 1 步：开始录制</a></li>
+<li><a href="#第2步正常做一遍你要它做">第 2 步：正常做一遍你要它做的事</a></li>
+<li><a href="#第3步停止并保存">第 3 步：停止并保存</a></li>
+<li><a href="#第4步回放">第 4 步：回放</a></li>
 </ul>
 </li>
-<li><a href="#4_1">4. 界面逐个说清楚</a><ul>
+<li><a href="#4">4. 界面逐个说清楚</a>
+<ul>
 <li><a href="#41">4.1 「可用脚本」区的按钮</a></li>
 <li><a href="#42">4.2 「执行队列」区的按钮</a></li>
 <li><a href="#43">4.3 底部执行控制</a></li>
 <li><a href="#44">4.4 快捷键（全局生效，软件在后台也管用）</a></li>
+<li><a href="#45">4.5 「组管理」窗口</a></li>
 </ul>
 </li>
-<li><a href="#5">5. 录制脚本的实操建议</a><ul>
+<li><a href="#5">5. 录制脚本的实操建议</a>
+<ul>
 <li><a href="#51">5.1 录制前</a></li>
 <li><a href="#52">5.2 录制中</a></li>
 <li><a href="#53">5.3 录制后</a></li>
 <li><a href="#54">5.4 脚本存在哪</a></li>
 </ul>
 </li>
-<li><a href="#6">6. 脚本组：把几个脚本串成流水线</a><ul>
+<li><a href="#6">6. 脚本组：把几个脚本串成流水线</a>
+<ul>
 <li><a href="#61">6.1 新建</a></li>
 <li><a href="#62">6.2 执行</a></li>
 </ul>
 </li>
-<li><a href="#7">7. 混合组：脚本、脚本组、截图组任意组合</a><ul>
+<li><a href="#7">7. 混合组：脚本、脚本组、截图组任意组合</a>
+<ul>
 <li><a href="#71">7.1 新建</a></li>
 <li><a href="#72">7.2 什么时候该用混合组</a></li>
 </ul>
 </li>
-<li><a href="#8">8. 认图点击：截图顺序识别</a><ul>
+<li><a href="#8">8. 认图点击：截图顺序识别</a>
+<ul>
 <li><a href="#81">8.1 它解决什么问题</a></li>
 <li><a href="#82">8.2 准备截图（最容易做错的一步）</a></li>
 <li><a href="#83">8.3 添加一个认图任务</a></li>
 <li><a href="#84">8.4 任务列表管理</a></li>
 <li><a href="#85">8.5 条件分支：界面不确定走哪条路时用</a></li>
 <li><a href="#86">8.6 运行认图流程</a></li>
-<li><a href="#87">8.7 截图组的管理</a></li>
+<li><a href="#87">8.7 按键触发：按一下键，整组从头重跑</a></li>
+<li><a href="#88">8.8 防死机保护</a></li>
+<li><a href="#89">8.9 截图组的管理</a></li>
 </ul>
 </li>
-<li><a href="#9">9. 定时任务</a><ul>
+<li><a href="#9">9. 定时任务</a>
+<ul>
 <li><a href="#91">9.1 打开</a></li>
 <li><a href="#92">9.2 全局倒计时</a></li>
 <li><a href="#93">9.3 任务列表</a></li>
@@ -172,18 +187,19 @@
 <li><a href="#95">9.5 定时任务的配置存在哪</a></li>
 </ul>
 </li>
-<li><a href="#10">10. 常见问题</a></li>
-<li><a href="#11">11. 关于数据与隐私</a></li>
-<li><a href="#_2">附录：一页速查</a></li>
+<li><a href="#10">10. 常见问题</a>
+</li>
+<li><a href="#11">11. 关于数据与隐私</a>
+</li>
+<li><a href="#附录一页速查">附录：一页速查</a>
+</li>
 </ul>
-</div>
-
+    </div>
   </nav>
   <main>
-<h1 id="_1">喵想奇记 操作说明</h1>
+<h1 id="喵想奇记操作说明">喵想奇记 操作说明</h1>
 <blockquote class="callout">
-<p>适用版本：家用版（<code>喵想奇记.exe</code>，2026-10 版）
-阅读方式：第一次用，请按顺序看第 1～4 章；想马上干活，直接跳到第 3 章「五分钟上手」。</p>
+<p>适用版本：家用版（<code>喵想奇记.exe</code>，2026-10 版） 阅读方式：第一次用，请按顺序看第 1～4 章；想马上干活，直接跳到第 3 章「五分钟上手」。</p>
 </blockquote>
 <hr />
 <h2 id="1">1. 这个软件是干什么的</h2>
@@ -200,84 +216,46 @@
 <h3 id="21">2.1 没有安装过程</h3>
 <p><code>喵想奇记.exe</code> 是单文件程序，<strong>放到哪个文件夹就在哪个文件夹运行</strong>，不用安装、不写注册表。</p>
 <p>建议这样放：</p>
-<p><code>D:\喵想奇记\
+<pre><code>D:\喵想奇记\
     喵想奇记.exe
-    scripts\          ← 程序第一次运行会自动建，你的录制脚本都存这里</code></p>
+    scripts\          ← 程序第一次运行会自动建，你的录制脚本都存这里</code></pre>
 <blockquote class="callout">
 <p>⚠️ <strong>别把 exe 放在桌面或回收站旁边</strong>。程序会在自己所在目录建 <code>scripts</code>、<code>script_groups</code>、<code>mixed_groups</code>、<code>images</code> 四个文件夹，桌面放一堆文件夹会很乱。</p>
 </blockquote>
 <h3 id="22">2.2 第一次打开可能遇到的两件事</h3>
 <table>
 <thead>
-<tr>
-<th>现象</th>
-<th>原因</th>
-<th>怎么办</th>
-</tr>
+<tr><th>现象</th><th>原因</th><th>怎么办</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>双击后没反应，或者快捷键按了不理人</td>
-<td>目标程序（如某些后台系统）是管理员权限运行的，普通权限的模拟按键会被系统拦住</td>
-<td>右键 <code>喵想奇记.exe</code> → 属性 → 兼容性 → 勾选 <strong>「以管理员身份运行此程序」</strong></td>
-</tr>
-<tr>
-<td>杀毒软件报毒 / 被删除</td>
-<td>这类"模拟键鼠"的程序容易被误判</td>
-<td>在杀毒软件里把 exe 加入信任 / 白名单</td>
-</tr>
+<tr><td>双击后没反应，或者快捷键按了不理人</td><td>目标程序（如某些后台系统）是管理员权限运行的，普通权限的模拟按键会被系统拦住</td><td>右键 <code>喵想奇记.exe</code> → 属性 → 兼容性 → 勾选 <strong>「以管理员身份运行此程序」</strong></td></tr>
+<tr><td>杀毒软件报毒 / 被删除</td><td>这类"模拟键鼠"的程序容易被误判</td><td>在杀毒软件里把 exe 加入信任 / 白名单</td></tr>
 </tbody>
 </table>
 <h3 id="23">2.3 主界面长什么样</h3>
-<p>打开后是一整屏的窗口，从上到下分六块：</p>
+<p>打开后窗口<strong>自动铺满全屏</strong>（最大化），整体是「顶部工具条 + 三个竖列 + 下方日志 + 底部执行控制」：</p>
 <table>
 <thead>
-<tr>
-<th>位置</th>
-<th>名称</th>
-<th>作用</th>
-</tr>
+<tr><th>位置</th><th>名称</th><th>作用</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>左上</td>
-<td>搜索框 + 「搜索」</td>
-<td>脚本多了以后，输入名字筛选左下角的脚本列表</td>
-</tr>
-<tr>
-<td>左侧</td>
-<td><strong>可用脚本</strong></td>
-<td>你录过的所有脚本；脚本组、混合组也在这里以 <code>▶ [脚本组]</code> 形式出现</td>
-</tr>
-<tr>
-<td>右侧</td>
-<td><strong>执行队列</strong></td>
-<td>待办清单，点「▶ 开始执行」就按这个顺序跑</td>
-</tr>
-<tr>
-<td>中部</td>
-<td><strong>第二种操作模式：截图顺序识别点击</strong></td>
-<td>认图点击的配置区，独立于脚本录制</td>
-</tr>
-<tr>
-<td>中下</td>
-<td><strong>执行日志</strong></td>
-<td>黑底白字的运行记录，出问题先看这里</td>
-</tr>
-<tr>
-<td>底部</td>
-<td>进度条 + 「▶ 开始执行」「■ 停止」「⏸ 暂停」「▶ 继续」+ 「速度倍数」「自动继续」</td>
-<td>执行控制</td>
-</tr>
+<tr><td>顶部左</td><td>搜索框 + 「搜索」</td><td>脚本多了以后，输入名字筛选「可用脚本」列表</td></tr>
+<tr><td>顶部右</td><td>「截图高级设置」「组管理」「定时任务」「停止录制」「开始录制」</td><td>不常用的开关都收在这里，主界面只留高频操作</td></tr>
+<tr><td>左列</td><td><strong>可用脚本</strong></td><td>你录过的所有脚本；脚本组、混合组也在这里以 <code>▶ [脚本组]</code> 形式出现</td></tr>
+<tr><td>中列</td><td><strong>第二种操作模式：截图顺序识别点击</strong></td><td>认图点击的配置区，独占一整列，任务多也看得下</td></tr>
+<tr><td>右列</td><td><strong>执行队列</strong></td><td>待办清单，点「▶ 开始执行」就按这个顺序跑</td></tr>
+<tr><td>下方</td><td><strong>执行日志</strong></td><td>彩色高亮的运行记录，出问题先看这里</td></tr>
+<tr><td>底部</td><td>进度条（带百分比与步数）+ 「▶ 开始执行」「■ 停止」「⏸ 暂停」「▶ 继续」+ 「速度倍数」「自动继续」</td><td>执行控制</td></tr>
 </tbody>
 </table>
+<p>三列宽度会随窗口自动伸缩，窗口拉多大都不会留下空白区域。</p>
 <p>右上角有一个 <strong>?</strong> 图标，鼠标悬停会显示快捷键速查。</p>
 <hr />
 <h2 id="3">3. 五分钟上手：录第一个脚本</h2>
 <p>目标：让软件自动打开记事本、敲一句话。</p>
-<h3 id="1_1">第 1 步：开始录制</h3>
+<h3 id="第1步开始录制">第 1 步：开始录制</h3>
 <p>点左下角 <strong>「开始录制」</strong>（或按 <code>Ctrl+Alt+F9</code>），弹出「开始录制...」提示后，程序就开始记录你的一切键鼠动作了。</p>
-<h3 id="2_1">第 2 步：正常做一遍你要它做的事</h3>
+<h3 id="第2步正常做一遍你要它做">第 2 步：正常做一遍你要它做的事</h3>
 <p>比如：</p>
 <ol>
 <li>按 <code>Win+R</code>，输入 <code>notepad</code>，回车</li>
@@ -287,99 +265,43 @@
 <blockquote class="callout">
 <p>⚠️ 从点「开始录制」这一刻起，<strong>你所有的鼠标移动都会被记下来</strong>，包括无关的抖动。所以录制期间手别乱晃，也别去点别的窗口——不然回放时鼠标会跟着乱跑。</p>
 </blockquote>
-<h3 id="3_1">第 3 步：停止并保存</h3>
+<h3 id="第3步停止并保存">第 3 步：停止并保存</h3>
 <p>点 <strong>「停止录制」</strong>（或按 <code>Ctrl+Alt+F10</code>），弹出「请输入脚本名称：」，输入 <code>打开记事本</code>，确定。</p>
 <p>左下角「可用脚本」里就多了一条 <code>打开记事本</code>，磁盘上对应 <code>scripts\打开记事本.json</code>。</p>
-<h3 id="4">第 4 步：回放</h3>
+<h3 id="第4步回放">第 4 步：回放</h3>
 <ol>
 <li><strong>双击</strong>列表里的 <code>打开记事本</code> → 弹出「重复次数」，填 <code>1</code></li>
 <li>点底部 <strong>「▶ 开始执行」</strong></li>
 </ol>
 <p>鼠标会自己动起来。想中途停下按 <strong>「■ 停止」</strong> 或 <code>Ctrl+Alt+F12</code>。</p>
 <hr />
-<h2 id="4_1">4. 界面逐个说清楚</h2>
+<h2 id="4">4. 界面逐个说清楚</h2>
 <h3 id="41">4.1 「可用脚本」区的按钮</h3>
 <p>先<strong>单击选中</strong>一条，再点按钮。</p>
 <table>
 <thead>
-<tr>
-<th>按钮</th>
-<th>作用</th>
-</tr>
+<tr><th>按钮</th><th>作用</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>搜索框 + 「搜索」</td>
-<td>按名称过滤列表</td>
-</tr>
-<tr>
-<td>「重命名」</td>
-<td>改脚本名（同时改文件名，别的组里引用它的地方会失效，慎用）</td>
-</tr>
-<tr>
-<td>「删除」</td>
-<td>删除脚本（会二次确认，删了就没了，脚本文件一并删除）</td>
-</tr>
-<tr>
-<td>「新建脚本组」</td>
-<td>把多个脚本串成一条流水线</td>
-</tr>
-<tr>
-<td>「编辑脚本组」</td>
-<td>修改已建好的脚本组</td>
-</tr>
-<tr>
-<td>「脚本组入队」</td>
-<td>把选中的脚本组加进右侧执行队列</td>
-</tr>
-<tr>
-<td>「删除脚本组」</td>
-<td>删除整个组（组里的脚本不会删）</td>
-</tr>
-<tr>
-<td>「新建混合组」</td>
-<td>建一个能同时装 脚本 / 脚本组 / 截图组 的复合流程</td>
-</tr>
-<tr>
-<td>「编辑混合组」</td>
-<td>修改混合组</td>
-</tr>
-<tr>
-<td>「混合组入队」</td>
-<td>把选中的混合组加进执行队列</td>
-</tr>
-<tr>
-<td>「删除混合组」</td>
-<td>删除混合组</td>
-</tr>
+<tr><td>搜索框 + 「搜索」</td><td>按名称过滤列表</td></tr>
+<tr><td>「重命名」</td><td>改脚本名（同时改文件名，别的组里引用它的地方会失效，慎用）</td></tr>
+<tr><td>「删除」</td><td>删除脚本（会二次确认，删了就没了，脚本文件一并删除）</td></tr>
+<tr><td>「新建脚本组」</td><td>把多个脚本串成一条流水线</td></tr>
+<tr><td>「新建混合组」</td><td>建一个能同时装 脚本 / 脚本组 / 截图组 的复合流程</td></tr>
+<tr><td>「组操作…」</td><td>打开「脚本组 / 混合组管理」窗口，集中做编辑、入队、删除（见 4.5）</td></tr>
 </tbody>
 </table>
 <p><strong>单击</strong>是选中，<strong>双击</strong>是加入队列（会问你重复次数）。</p>
 <h3 id="42">4.2 「执行队列」区的按钮</h3>
 <table>
 <thead>
-<tr>
-<th>按钮</th>
-<th>作用</th>
-</tr>
+<tr><th>按钮</th><th>作用</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>「添加队列」</td>
-<td>把选中的脚本加进队列；会依次问你<strong>重复次数</strong>和<strong>匹配阈值</strong>（阈值直接回车用默认 0.5 即可，当前版本不参与判断）</td>
-</tr>
-<tr>
-<td>「移除队列」</td>
-<td>移除选中项</td>
-</tr>
-<tr>
-<td>「清空队列」</td>
-<td>全部清空，并重置执行状态</td>
-</tr>
-<tr>
-<td>「截图组入队」</td>
-<td>把当前选中的截图组整组加进队列</td>
-</tr>
+<tr><td>「添加选中脚本」</td><td>把左侧选中的脚本加进队列；会依次问你<strong>重复次数</strong>和<strong>匹配阈值</strong>（阈值直接回车用默认 0.5 即可，当前版本不参与判断）</td></tr>
+<tr><td>「截图组入队」</td><td>把当前选中的截图组整组加进队列</td></tr>
+<tr><td>「移除」</td><td>移除选中项</td></tr>
+<tr><td>「清空」</td><td>全部清空，并重置执行状态</td></tr>
 </tbody>
 </table>
 <p>队列里的条目<strong>可以用鼠标拖动来调整顺序</strong>：按住一条往上/往下拖，松手即生效。</p>
@@ -394,50 +316,34 @@
 <h3 id="43">4.3 底部执行控制</h3>
 <table>
 <thead>
-<tr>
-<th>控件</th>
-<th>说明</th>
-</tr>
+<tr><th>控件</th><th>说明</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>进度条</td>
-<td>按"总事件数"推进；含截图任务的流程进度条可能长时间不动（在等图出现），属正常</td>
-</tr>
-<tr>
-<td>「▶ 开始执行」</td>
-<td>从队列第 1 项开始跑（<code>Ctrl+Alt+F11</code>）</td>
-</tr>
-<tr>
-<td>「■ 停止」</td>
-<td>立即中止（<code>Ctrl+Alt+F12</code>）。停止后再开始是<strong>从头</strong>跑</td>
-</tr>
-<tr>
-<td>「⏸ 暂停」</td>
-<td>暂停，记住当前位置（<code>Ctrl+Alt+F7</code>）</td>
-</tr>
-<tr>
-<td>「▶ 继续」</td>
-<td>从暂停处接着跑（<code>Ctrl+Alt+F8</code>）</td>
-</tr>
-<tr>
-<td>「速度倍数」</td>
-<td>1～10。1 = 原速，2 = 快一倍，10 = 十倍的快进</td>
-</tr>
-<tr>
-<td>「自动继续」</td>
-<td>勾上后，队列跑完一项不停顿、直接下一项，直到全部结束</td>
-</tr>
-<tr>
-<td>「执行日志」</td>
-<td>每一步都会记一行，包括"执行脚本：xx (×2)"「队列已暂停」等</td>
-</tr>
-<tr>
-<td>状态栏（左下）</td>
-<td>就绪 / 执行中 / 已暂停 / 执行完成</td>
-</tr>
+<tr><td>进度条</td><td>按"总事件数"推进，右侧实时显示百分比与明细，如 <code>40% (120/300)</code>；截图流程显示 <code>40% 4/10 步</code>。含截图任务的流程在等图时会暂时停住，属正常</td></tr>
+<tr><td>「▶ 开始执行」</td><td>从队列第 1 项开始跑（<code>Ctrl+Alt+F11</code>）</td></tr>
+<tr><td>「■ 停止」</td><td>立即中止（<code>Ctrl+Alt+F12</code>）。停止后再开始是<strong>从头</strong>跑，进度条归零</td></tr>
+<tr><td>「⏸ 暂停」</td><td>暂停，记住当前位置（<code>Ctrl+Alt+F7</code>）</td></tr>
+<tr><td>「▶ 继续」</td><td>从暂停处接着跑（<code>Ctrl+Alt+F8</code>）</td></tr>
+<tr><td>「速度倍数」</td><td>1～10。1 = 原速，2 = 快一倍，10 = 十倍的快进</td></tr>
+<tr><td>「自动继续」</td><td>勾上后，队列跑完一项不停顿、直接下一项，直到全部结束</td></tr>
+<tr><td>状态栏（左下）</td><td>就绪 / 执行中 / 已暂停 / 执行完成</td></tr>
 </tbody>
 </table>
+<p><strong>执行日志的彩色高亮</strong>（一眼看到关键操作）：</p>
+<table>
+<thead>
+<tr><th>颜色</th><th>代表</th></tr>
+</thead>
+<tbody>
+<tr><td>绿色加粗</td><td>成功、完成、已启动</td></tr>
+<tr><td>红色（浅红底）</td><td>错误、失败、异常</td></tr>
+<tr><td>橙色加粗</td><td>警告、超时、跳过、防死机自动停止</td></tr>
+<tr><td>紫色加粗</td><td>定时任务、按键触发、截图流程、倒计时</td></tr>
+<tr><td>蓝色</td><td>执行脚本 / 任务步骤</td></tr>
+<tr><td>灰色</td><td>时间戳</td></tr>
+</tbody>
+</table>
+<p>日志最多保留 1500 行，超出后自动丢弃最旧的内容，长时间挂着也不会越用越卡。</p>
 <p><strong>「自动继续」不勾时的实际行为</strong>（容易误解，重点看）：</p>
 <ul>
 <li>队列里连续的<strong>普通脚本</strong>会自动一条接一条跑完，不会每条都停</li>
@@ -447,42 +353,38 @@
 <h3 id="44">4.4 快捷键（全局生效，软件在后台也管用）</h3>
 <table>
 <thead>
-<tr>
-<th>快捷键</th>
-<th>作用</th>
-</tr>
+<tr><th>快捷键</th><th>作用</th></tr>
 </thead>
 <tbody>
-<tr>
-<td><code>Ctrl+Alt+F9</code></td>
-<td>开始 / 停止录制</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F10</code></td>
-<td>停止录制并保存</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F11</code></td>
-<td>开始执行 / 继续下一个</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F12</code></td>
-<td>停止执行</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F7</code></td>
-<td>暂停</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F8</code></td>
-<td>继续</td>
-</tr>
-<tr>
-<td><code>Ctrl+Alt+F1</code></td>
-<td>重新执行（从头再来一次）</td>
-</tr>
+<tr><td><code>Ctrl+Alt+F9</code></td><td>开始 / 停止录制</td></tr>
+<tr><td><code>Ctrl+Alt+F10</code></td><td>停止录制并保存</td></tr>
+<tr><td><code>Ctrl+Alt+F11</code></td><td>开始执行 / 继续下一个</td></tr>
+<tr><td><code>Ctrl+Alt+F12</code></td><td>停止执行</td></tr>
+<tr><td><code>Ctrl+Alt+F7</code></td><td>暂停</td></tr>
+<tr><td><code>Ctrl+Alt+F8</code></td><td>继续</td></tr>
+<tr><td><code>Ctrl+Alt+F1</code></td><td>重新执行（从头再来一次）</td></tr>
 </tbody>
 </table>
+<h3 id="45">4.5 「组管理」窗口</h3>
+<p>顶部工具条点 <strong>「组管理」</strong>（或左列「组操作…」）打开，专门管脚本组和混合组，避免主界面按钮堆成一片：</p>
+<table>
+<thead>
+<tr><th>区块</th><th>按钮</th><th>作用</th></tr>
+</thead>
+<tbody>
+<tr><td>脚本组</td><td>「新建脚本组」</td><td>把多个脚本串成一条流水线</td></tr>
+<tr><td></td><td>「编辑」</td><td>修改选中的脚本组（增删脚本、调顺序）</td></tr>
+<tr><td></td><td>「入队」</td><td>把选中的脚本组加进右侧执行队列</td></tr>
+<tr><td></td><td>「删除」</td><td>删除整个组（组里的脚本不会删）</td></tr>
+<tr><td>混合组</td><td>「新建混合组」</td><td>建一个能装 脚本 / 脚本组 / 截图组 的复合流程</td></tr>
+<tr><td></td><td>「编辑」</td><td>修改混合组</td></tr>
+<tr><td></td><td>「入队」</td><td>把选中的混合组加进执行队列</td></tr>
+<tr><td></td><td>「删除」</td><td>删除混合组</td></tr>
+</tbody>
+</table>
+<blockquote class="callout">
+<p>操作对象是左列「可用脚本」里<strong>当前选中的那一项</strong>，所以先选中再开这个窗口。</p>
+</blockquote>
 <hr />
 <h2 id="5">5. 录制脚本的实操建议</h2>
 <h3 id="51">5.1 录制前</h3>
@@ -539,14 +441,18 @@
 <ol>
 <li>点「新建混合组」→ 窗口「新建混合组」</li>
 <li>填 <strong>混合组名称</strong>、<strong>执行前提醒内容（组级别）</strong></li>
-<li>中间是 <strong>「步骤列表（从上到下执行）」</strong>，用下面几个按钮往里加：
-   - 「添加脚本」
-   - 「添加脚本组」
-   - 「添加截图组」
-   - 「添加截图任务」</li>
-<li><strong>双击某个步骤</strong>可以打开「步骤设置」，里面只有两项，但很好用：
-   - <strong>「执行后等待(秒)」</strong> —— 这一步做完后等多久再进下一步（等页面加载、等文件生成）
-   - <strong>「执行完后自动继续（不暂停）」</strong> —— 这一步单独设定是否要停</li>
+<li>中间是 <strong>「步骤列表（从上到下执行）」</strong>，用下面几个按钮往里加：</li>
+<ul>
+<li>「添加脚本」</li>
+<li>「添加脚本组」</li>
+<li>「添加截图组」</li>
+<li>「添加截图任务」</li>
+</ul>
+<li><strong>双击某个步骤</strong>可以打开「步骤设置」，里面只有两项，但很好用：</li>
+<ul>
+<li><strong>「执行后等待(秒)」</strong> —— 这一步做完后等多久再进下一步（等页面加载、等文件生成）</li>
+<li><strong>「执行完后自动继续（不暂停）」</strong> —— 这一步单独设定是否要停</li>
+</ul>
 <li>「上移」「下移」「移除步骤」调顺序，最后保存</li>
 </ol>
 <h3 id="72">7.2 什么时候该用混合组</h3>
@@ -572,116 +478,59 @@
 <ol>
 <li>点「添加截图」→ 弹出文件选择框「选择用户截图」→ 选你刚存的那张图</li>
 <li>打开 <strong>「添加截图操作」</strong> 窗口，上半部是你的截图预览：</li>
-</ol>
 <ul>
 <li><strong>红色十字 = 基准点</strong>：在预览上<strong>点一下</strong>你要点的位置</li>
 <li><strong>蓝色十字 = 最终操作点</strong>：等于"基准点 + X/Y 微调"。默认微调是 0，两个十字重合</li>
 <li>想点按钮之外的地方（比如按钮右侧的输入框），就调 <strong>「X 微调」「Y 微调」</strong>（正数向右/向下，负数向左/向上），蓝十会跟着移动，可以移到截图外面</li>
 </ul>
-<ol start="3">
 <li>下半部「操作设置」：</li>
 </ol>
 <table>
 <thead>
-<tr>
-<th>字段</th>
-<th>怎么填</th>
-</tr>
+<tr><th>字段</th><th>怎么填</th></tr>
 </thead>
 <tbody>
-<tr>
-<td><strong>识别后操作</strong></td>
-<td>见下表 12 种可选</td>
-</tr>
-<tr>
-<td><strong>X 微调 / Y 微调</strong></td>
-<td>一般 0；要偏离目标点时再调，范围 ±5000</td>
-</tr>
-<tr>
-<td><strong>匹配阈值</strong></td>
-<td>默认 <code>0.75</code>。<strong>建议 0.70～0.90</strong>：越高越严格（一点不像就不认），越低越宽松（容易认错）。认不出→调低到 0.70；认错了→调高到 0.85</td>
-</tr>
-<tr>
-<td><strong>识别后等待</strong></td>
-<td>点完停几秒再干下一步，等页面反应。默认 0</td>
-</tr>
-<tr>
-<td><strong>重复操作</strong></td>
-<td>这个任务执行几次，默认 1</td>
-</tr>
+<tr><td><strong>识别后操作</strong></td><td>见下表 12 种可选</td></tr>
+<tr><td><strong>X 微调 / Y 微调</strong></td><td>一般 0；要偏离目标点时再调，范围 ±5000</td></tr>
+<tr><td><strong>匹配阈值</strong></td><td>默认 <code>0.75</code>。<strong>建议 0.70～0.90</strong>：越高越严格（一点不像就不认），越低越宽松（容易认错）。认不出→调低到 0.70；认错了→调高到 0.85</td></tr>
+<tr><td><strong>识别后等待</strong></td><td>点完停几秒再干下一步，等页面反应。默认 0</td></tr>
+<tr><td><strong>重复操作</strong></td><td>这个任务执行几次，默认 1</td></tr>
 </tbody>
 </table>
-<ol start="4">
+<ol>
 <li>如果"识别后操作"选了 <strong>「键盘按键」</strong> 或 <strong>「输入文本」</strong>，下半部「键盘操作」区才起作用：</li>
 </ol>
 <table>
 <thead>
-<tr>
-<th>字段</th>
-<th>说明</th>
-</tr>
+<tr><th>字段</th><th>说明</th></tr>
 </thead>
 <tbody>
-<tr>
-<td><strong>按键组合</strong></td>
-<td>如 <code>enter</code>、<code>tab</code>、<code>esc</code>、<code>f5</code>、<code>ctrl+s</code>、<code>ctrl+v</code>、<code>alt+f4</code>、<code>ctrl+shift+esc</code>；<strong>多个动作用逗号分隔</strong>，如 <code>tab, enter</code>、<code>tab, tab, enter</code>；组合键用 <code>+</code></td>
-</tr>
-<tr>
-<td><strong>输入文本</strong></td>
-<td>最多 <strong>300 字</strong>，支持中文；不会占用系统剪贴板</td>
-</tr>
-<tr>
-<td><strong>输入后按回车</strong></td>
-<td>勾上则输完自动回车</td>
-</tr>
+<tr><td><strong>按键组合</strong></td><td>如 <code>enter</code>、<code>tab</code>、<code>esc</code>、<code>f5</code>、<code>ctrl+s</code>、<code>ctrl+v</code>、<code>alt+f4</code>、<code>ctrl+shift+esc</code>；<strong>多个动作用逗号分隔</strong>，如 <code>tab, enter</code>、<code>tab, tab, enter</code>；组合键用 <code>+</code></td></tr>
+<tr><td><strong>输入文本</strong></td><td>最多 <strong>300 字</strong>，支持中文；不会占用系统剪贴板</td></tr>
+<tr><td><strong>输入后按回车</strong></td><td>勾上则输完自动回车</td></tr>
 </tbody>
 </table>
-<ol start="5">
+<ol>
 <li>点 <strong>「保存设置」</strong></li>
 </ol>
 <p><strong>12 种「识别后操作」</strong>：</p>
-<p>鼠标类（10 种）：左键单击、左键双击、右键单击、右键双击、中键单击、左键按下、左键释放、右键按下、右键释放、仅移动鼠标
-键盘类（2 种）：键盘按键、输入文本</p>
+<p>鼠标类（10 种）：左键单击、左键双击、右键单击、右键双击、中键单击、左键按下、左键释放、右键按下、右键释放、仅移动鼠标 键盘类（2 种）：键盘按键、输入文本</p>
 <blockquote class="callout">
 <p>小技巧：<strong>左键按下 / 左键释放</strong> 用来做"拖拽"——一个任务按下、中间插入移动、下一个任务释放。</p>
 </blockquote>
 <h3 id="84">8.4 任务列表管理</h3>
 <table>
 <thead>
-<tr>
-<th>按钮</th>
-<th>作用</th>
-</tr>
+<tr><th>按钮</th><th>作用</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>「添加截图」</td>
-<td>加新任务（选图片 → 设置）</td>
-</tr>
-<tr>
-<td>「编辑操作」</td>
-<td>修改选中任务（<strong>双击任务</strong>同样进入编辑）</td>
-</tr>
-<tr>
-<td>「添加条件分支」</td>
-<td>加一个"多选一"的节点，见 8.5</td>
-</tr>
-<tr>
-<td>「上移」「下移」</td>
-<td>调顺序，<strong>顺序就是执行顺序</strong></td>
-</tr>
-<tr>
-<td>「删除」</td>
-<td>删除选中任务</td>
-</tr>
-<tr>
-<td>「清空」</td>
-<td>清空整组任务</td>
-</tr>
-<tr>
-<td>「入队单个任务」</td>
-<td>只把这一个任务加进执列队列</td>
-</tr>
+<tr><td>「添加截图」</td><td>加新任务（选图片 → 设置）</td></tr>
+<tr><td>「编辑操作」</td><td>修改选中任务（<strong>双击任务</strong>同样进入编辑）</td></tr>
+<tr><td>「添加条件分支」</td><td>加一个"多选一"的节点，见 8.5</td></tr>
+<tr><td>「上移」「下移」</td><td>调顺序，<strong>顺序就是执行顺序</strong></td></tr>
+<tr><td>「删除」</td><td>删除选中任务</td></tr>
+<tr><td>「清空」</td><td>清空整组任务</td></tr>
+<tr><td>「入队单个任务」</td><td>只把这一个任务加进执列队列</td></tr>
 </tbody>
 </table>
 <h3 id="85">8.5 条件分支：界面不确定走哪条路时用</h3>
@@ -693,64 +542,70 @@
 </ol>
 <table>
 <thead>
-<tr>
-<th>字段</th>
-<th>说明</th>
-</tr>
+<tr><th>字段</th><th>说明</th></tr>
 </thead>
 <tbody>
-<tr>
-<td>匹配阈值</td>
-<td>默认 0.75</td>
-</tr>
-<tr>
-<td>识别后等待(秒)</td>
-<td>命中后等多久</td>
-</tr>
-<tr>
-<td>识别后操作</td>
-<td>命中后做什么（鼠标 / 键盘 / 输入文本）</td>
-</tr>
-<tr>
-<td>按键组合、输入文本</td>
-<td>同上</td>
-</tr>
-<tr>
-<td><strong>分支等待超时(秒)</strong></td>
-<td><strong>0 = 无限等待</strong>，直到某张候选图出现；<strong>大于 0 = 超时后自动跳过这个分支节点</strong>，继续主线下一个任务</td>
-</tr>
+<tr><td>匹配阈值</td><td>默认 0.75</td></tr>
+<tr><td>识别后等待(秒)</td><td>命中后等多久</td></tr>
+<tr><td>识别后操作</td><td>命中后做什么（鼠标 / 键盘 / 输入文本）</td></tr>
+<tr><td>按键组合、输入文本</td><td>同上</td></tr>
+<tr><td><strong>分支等待超时(秒)</strong></td><td><strong>0 = 无限等待</strong>，直到某张候选图出现；<strong>大于 0 = 超时后自动跳过这个分支节点</strong>，继续主线下一个任务</td></tr>
 </tbody>
 </table>
-<ol start="3">
+<ol>
 <li>保存后，这个节点会<strong>同时盯着所有候选图</strong>，哪张先出现就走哪条（执行该分支设定的操作），然后进入下一个任务</li>
 </ol>
 <blockquote class="callout">
 <p>加了条件分支的节点，不能用「编辑操作」改，只能删除后重加（程序会提示）。</p>
 </blockquote>
 <h3 id="86">8.6 运行认图流程</h3>
-<p>有两种跑法：</p>
+<p>有三种跑法：</p>
 <ul>
 <li><strong>整组跑</strong>：选中「截图组」→ 「截图组入队」→ 「▶ 开始执行」；或直接点 <strong>「▶ 开始按顺序识别并点击」</strong> 立刻开始跑当前组</li>
 <li><strong>单个跑</strong>：选中一个任务 → 「入队单个任务」</li>
-<li>停止：点 <strong>「■ 停止截图识别」</strong></li>
+<li><strong>按键触发跑</strong>：见 8.7，按一下键就让整组从头重跑</li>
+<li>停止：点 <strong>「■ 停止识别」</strong></li>
 </ul>
+<p>运行时中列下方会显示 <strong>状态</strong>（未开始 / 正在执行第几步 / 全部任务已完成 / 已停止），底部进度条同步显示 <code>4/10 步</code>。</p>
 <p><strong>必须知道的两个行为</strong>：</p>
 <ol>
-<li><strong>普通任务没有超时</strong>。截图一直不出现，它就会<strong>一直等下去</strong>，日志停在那一条。这不是卡死——要么图截得不对，要么目标界面没打开。要中断就点「■ 停止截图识别」。</li>
+<li><strong>每一步都有防死机保护</strong>：默认连续 <strong>5 分钟</strong>没识别成功，就自动停止当前任务并在日志里写明是哪一步（橙色字）。可以在「截图高级设置」里把这个时间改成 0（关闭）到 120 分钟。所以现在不会出现"一直干等、日志不动"的情况。</li>
 <li><strong>重复操作次数 &gt; 1 时</strong>，程序要求目标<strong>先消失、再出现</strong>才算下一次，防止同一画面被连点。所以别指望"连点同一个按钮 5 次"，那需要 5 个独立任务或者用循环。</li>
 </ol>
-<h3 id="87">8.7 截图组的管理</h3>
-<p>顶部一行：<strong>截图组</strong>下拉 + 「新增组」「重命名」「复制组」「删除组」。</p>
+<h3 id="87">8.7 按键触发：按一下键，整组从头重跑</h3>
+<p>适合"我手动点到某个界面后，让它接手跑固定流程"的场景。</p>
+<ol>
+<li>点顶部 <strong>「截图高级设置」</strong></li>
+<li>「按键触发」区选<strong>触发按键</strong>：<code>ctrl+alt+1</code>、<code>ctrl+alt+2</code>、<code>ctrl+alt+3</code>、<code>ctrl+shift+f9</code>、<code>f8</code>、<code>f9</code>、<code>enter</code>、<code>ctrl+enter</code></li>
+<li>点 <strong>「启用按键触发」</strong>（按钮会变成「停用按键触发」，状态显示已启用）</li>
+</ol>
+<p>之后<strong>在任何地方按下这个键</strong>，当前选中的截图组就会立刻<strong>从第一个任务重新开始</strong>。</p>
+<ul>
+<li>每按一次就重跑一次，不会叠加、不会排队</li>
+<li>软件自己模拟出来的按键<strong>不会误触发</strong>（内部已过滤）</li>
+<li>建议用组合键：单键（如 <code>enter</code>）在任何输入框里按下都会触发</li>
+<li>设置保存在 <code>%APPDATA%\MiaoXiangQiJi\app_settings.json</code>，下次打开自动恢复启用状态</li>
+</ul>
+<h3 id="88">8.8 防死机保护</h3>
+<p>「截图高级设置」里的「防死机保护」：</p>
+<ul>
+<li><strong>单步连续 \_\_ 分钟未识别成功则自动停止当前任务</strong>，默认 <strong>5 分钟</strong></li>
+<li><code>0</code> = 关闭该保护（回到"一直等"的老行为）</li>
+<li>改完点「保存」</li>
+</ul>
+<p>触发时会：停止当前截图流程 → 状态栏显示"已超时自动停止：第 N 步「xxx」等待超过 5 分钟" → 日志橙色记录。</p>
+<h3 id="89">8.9 截图组的管理</h3>
+<p>点顶部 <strong>「截图高级设置」</strong>，最上面一行是<strong>截图组管理</strong>：当前组名 + 「新增组」「重命名」「复制组」「删除组」。</p>
 <ul>
 <li>一个组 = 一套有先后顺序的认图流程。不同业务放不同组（比如"工资导出""考勤补录"）</li>
 <li>「复制组」很适合做变体：复制一份改几张图就是新流程</li>
 <li>至少保留一个组，最后一个删不掉</li>
-<li>状态提示会显示"当前组：xx"</li>
+<li>主界面中列的「截图组」下拉框用来<strong>切换当前操作的组</strong></li>
 </ul>
 <hr />
 <h2 id="9">9. 定时任务</h2>
 <h3 id="91">9.1 打开</h3>
-<p>主界面左中部点 <strong>「定时任务」</strong> → 窗口「定时任务管理」。</p>
+<p>主界面<strong>顶部工具条右侧</strong>点 <strong>「定时任务」</strong> → 窗口「定时任务管理」（重复点只会把已有窗口提到前面，不会开出好几个）。</p>
 <blockquote class="callout">
 <p>⚠️ 定时任务<strong>依赖软件一直开着</strong>。关掉软件，定时任务不会执行。</p>
 </blockquote>
@@ -774,48 +629,18 @@
 <p>点「添加任务」→ 窗口「添加定时任务」：</p>
 <table>
 <thead>
-<tr>
-<th>字段</th>
-<th>说明</th>
-</tr>
+<tr><th>字段</th><th>说明</th></tr>
 </thead>
 <tbody>
-<tr>
-<td><strong>任务类型</strong></td>
-<td>普通脚本 / 脚本组 / 截图流程组 / 混合组。选哪个，下面的"执行目标"就列哪类</td>
-</tr>
-<tr>
-<td><strong>执行目标</strong></td>
-<td>具体要跑的东西</td>
-</tr>
-<tr>
-<td><strong>重复规则</strong></td>
-<td>单次 / 每日 / 每周 / 每月 / 每年</td>
-</tr>
-<tr>
-<td><strong>时间</strong></td>
-<td>时（0-23）: 分（0-59）</td>
-</tr>
-<tr>
-<td><strong>每周的星期几（多选）</strong></td>
-<td>仅在"每周"时出现，可多选</td>
-</tr>
-<tr>
-<td><strong>每月几号 (1-31)</strong></td>
-<td>仅在"每月"时出现</td>
-</tr>
-<tr>
-<td><strong>每年（月/日）</strong></td>
-<td>仅在"每年"时出现</td>
-</tr>
-<tr>
-<td><strong>执行次数 (0=无限)</strong></td>
-<td>0 表示一直执行；填 3 就跑 3 次后自动停</td>
-</tr>
-<tr>
-<td><strong>触发前倒计时 (秒, 0=不提示)</strong></td>
-<td>默认取全局值；单个任务可单独设</td>
-</tr>
+<tr><td><strong>任务类型</strong></td><td>普通脚本 / 脚本组 / 截图流程组 / 混合组。选哪个，下面的"执行目标"就列哪类</td></tr>
+<tr><td><strong>执行目标</strong></td><td>具体要跑的东西</td></tr>
+<tr><td><strong>重复规则</strong></td><td>单次 / 每日 / 每周 / 每月 / 每年</td></tr>
+<tr><td><strong>时间</strong></td><td>时（0-23）: 分（0-59）</td></tr>
+<tr><td><strong>每周的星期几（多选）</strong></td><td>仅在"每周"时出现，可多选</td></tr>
+<tr><td><strong>每月几号 (1-31)</strong></td><td>仅在"每月"时出现</td></tr>
+<tr><td><strong>每年（月/日）</strong></td><td>仅在"每年"时出现</td></tr>
+<tr><td><strong>执行次数 (0=无限)</strong></td><td>0 表示一直执行；填 3 就跑 3 次后自动停</td></tr>
+<tr><td><strong>触发前倒计时 (秒, 0=不提示)</strong></td><td>默认取全局值；单个任务可单独设</td></tr>
 </tbody>
 </table>
 <p>填完点「确定」。</p>
@@ -826,30 +651,23 @@
 <li>每月 1 号 10:00 生成上月工资表 → 规则「每月」+ 每月几号 1</li>
 </ul>
 <h3 id="95">9.5 定时任务的配置存在哪</h3>
-<p><code>%APPDATA%\MiaoXiangQiJi\scheduled_tasks.json</code>
-（在资源管理器地址栏输入 <code>%APPDATA%\MiaoXiangQiJi</code> 可直接打开）</p>
+<p><code>%APPDATA%\MiaoXiangQiJi\scheduled_tasks.json</code> （在资源管理器地址栏输入 <code>%APPDATA%\MiaoXiangQiJi</code> 可直接打开）</p>
 <p>同一个目录下还有 <code>app_settings.json</code>，存全局设置（比如倒计时默认值）。</p>
 <hr />
 <h2 id="10">10. 常见问题</h2>
-<p><strong>Q：按了「开始执行」鼠标不动，日志也没有新内容？</strong>
-A：先看「执行队列」是不是空的——空队列点了没反应。然后看日志最后一行，通常在提示原因。</p>
-<p><strong>Q：回放时点错位置，整体偏了一段？</strong>
-A：多半是<strong>缩放比例变了</strong>。程序按 100%/125%/150% 会自动换算，但录制和回放<strong>必须在同一个缩放比例下</strong>。换了显示器或改了缩放，建议重录，或者改用认图点击。</p>
-<p><strong>Q：快捷键完全没反应？</strong>
-A：目标程序是管理员权限，而本软件不是。右键 exe → 属性 → 兼容性 → 勾「以管理员身份运行此程序」。</p>
-<p><strong>Q：认图任务一直干等，日志不动？</strong>
-A：截图没匹配上。检查：① 目标界面是否已经打开在前台 ② 截图是不是在本机这个缩放比例下截的 ③ 把匹配阈值从 0.75 降到 0.70 ④ 重新截一张更聚焦目标的图。</p>
-<p><strong>Q：认图认错了，点了别的地方？</strong>
-A：阈值太低或截图特征太弱。把阈值提到 0.85，并截得更有辨识度（带图标、带独特文字的那块）。</p>
-<p><strong>Q：想中途取消？</strong>
-A：脚本执行按 <code>Ctrl+Alt+F12</code> 或「■ 停止」；认图流程点「■ 停止截图识别」。</p>
-<p><strong>Q：脚本删了能恢复吗？</strong>
-A：不能。脚本就是 <code>scripts\</code> 下的 json 文件，建议定期把整个软件目录压缩备份一份。</p>
-<p><strong>Q：能不能拷到别的电脑用？</strong>
-A：可以。拷整个软件文件夹（含 <code>scripts</code>、<code>script_groups</code>、<code>mixed_groups</code>、<code>images</code>）。但<strong>认图任务依赖截图所在的屏幕特征</strong>，换分辨率/缩放后要重新截图。</p>
-<p><strong>Q：日志窗口里的提示看不懂？</strong>
-A：日志是给排查用的，常见几类：
-<code>执行脚本：名字 (×2)</code> 正常开始；<code>队列已暂停，按 Ctrl+Alt+F11 继续</code> 在等人；<code>✅ 所有脚本执行完毕</code> 全部跑完；<code>执行失败：...</code> 后面跟的就是原因。</p>
+<p><strong>Q：按了「开始执行」鼠标不动，日志也没有新内容？</strong> A：先看「执行队列」是不是空的——空队列点了没反应。然后看日志最后一行，通常在提示原因。</p>
+<p><strong>Q：回放时点错位置，整体偏了一段？</strong> A：多半是<strong>缩放比例变了</strong>。程序按 100%/125%/150% 会自动换算，但录制和回放<strong>必须在同一个缩放比例下</strong>。换了显示器或改了缩放，建议重录，或者改用认图点击。</p>
+<p><strong>Q：快捷键完全没反应？</strong> A：目标程序是管理员权限，而本软件不是。右键 exe → 属性 → 兼容性 → 勾「以管理员身份运行此程序」。</p>
+<p><strong>Q：认图任务一直干等，日志不动？</strong> A：截图没匹配上。检查：① 目标界面是否已经打开在前台 ② 截图是不是在本机这个缩放比例下截的 ③ 把匹配阈值从 0.75 降到 0.70 ④ 重新截一张更聚焦目标的图。</p>
+<p><strong>Q：认图认错了，点了别的地方？</strong> A：阈值太低或截图特征太弱。把阈值提到 0.85，并截得更有辨识度（带图标、带独特文字的那块）。</p>
+<p><strong>Q：想中途取消？</strong> A：脚本执行按 <code>Ctrl+Alt+F12</code> 或「■ 停止」；认图流程点「■ 停止截图识别」。</p>
+<p><strong>Q：脚本删了能恢复吗？</strong> A：不能。脚本就是 <code>scripts\</code> 下的 json 文件，建议定期把整个软件目录压缩备份一份。</p>
+<p><strong>Q：能不能拷到别的电脑用？</strong> A：可以。拷整个软件文件夹（含 <code>scripts</code>、<code>script_groups</code>、<code>mixed_groups</code>、<code>images</code>）。但<strong>认图任务依赖截图所在的屏幕特征</strong>，换分辨率/缩放后要重新截图。</p>
+<p><strong>Q：日志里颜色是什么意思？</strong> A：绿=成功完成、红=失败错误、橙=警告/超时/防死机停止、紫=定时任务与按键触发与截图流程、蓝=执行步骤、灰=时间戳。先用颜色扫一眼，再去读具体那几行。</p>
+<p><strong>Q：进度条一直不动 / 一下子跳到 100%？</strong> A：脚本回放是按"事件"推进的，一个事件可能就是一个鼠标移动，所以会平滑推进；截图流程按"步"推进，等图期间不动是正常的。当前版本已修正早期"进度瞬间满格"的问题，并会在右侧显示 <code>40% (120/300)</code> 这样的明细。若数字明显对不上，请把日志截图发我。</p>
+<p><strong>Q：自己打包时报错，提示 exe 被占用 / 无法覆盖？</strong> A：说明 <code>dist\喵想奇记.exe</code> 还在运行。仓库里的 <code>打包python为软件.bat</code> 已修好：会先自动结束正在运行的旧程序再打包，并在失败时列出常见原因。也可以手动结束「喵想奇记.exe」进程后重试。</p>
+<p><strong>Q：按了触发键没反应？</strong> A：① 先确认「截图高级设置」里状态显示"已启用" ② 组合键要同时按下（如 <code>ctrl+alt+1</code>） ③ 单键（如 <code>enter</code>）在部分输入法/游戏里会被拦截，换组合键。</p>
+<p><strong>Q：日志窗口里的提示看不懂？</strong> A：日志是给排查用的，常见几类： <code>执行脚本：名字 (×2)</code> 正常开始；<code>队列已暂停，按 Ctrl+Alt+F11 继续</code> 在等人；<code>✅ 所有脚本执行完毕</code> 全部跑完；<code>执行失败：...</code> 后面跟的就是原因。</p>
 <hr />
 <h2 id="11">11. 关于数据与隐私</h2>
 <ul>
@@ -858,12 +676,15 @@ A：日志是给排查用的，常见几类：
 <li>定时任务和全局设置在同一台电脑的 <code>%APPDATA%\MiaoXiangQiJi\</code> 下，不随软件目录一起拷贝，迁移电脑时记得单独拷</li>
 </ul>
 <hr />
-<h2 id="_2">附录：一页速查</h2>
+<h2 id="附录一页速查">附录：一页速查</h2>
 <p><strong>录一个脚本</strong>：开始录制 → 操作一遍 → 停止录制 → 命名 → 双击加入队列 → 开始执行</p>
-<p><strong>串多个脚本</strong>：新建脚本组 → 双击添加脚本 → 排序 → 保存 → 脚本组入队</p>
-<p><strong>认图点击</strong>：Win+Shift+S 截图存盘 → 添加截图 → 预览上点基准点 → 调阈值(0.75) → 选识别后操作 → 保存 → 开始按顺序识别并点击</p>
+<p><strong>串多个脚本</strong>：组管理 → 新建脚本组 → 双击添加脚本 → 排序 → 保存 → 入队</p>
+<p><strong>认图点击</strong>：Win+Shift+S 截图存盘 → 添加截图 → 预览上点基准点 → 调阈值(0.75) → 选识别后操作（可回放按键或输文本） → 保存 → 开始按顺序识别并点击</p>
+<p><strong>按键触发重跑</strong>：截图高级设置 → 选触发键 → 启用 → 之后按一次键，整组从头再跑</p>
 <p><strong>定时跑</strong>：定时任务 → 添加任务 → 选类型/目标/规则/时间 → 确定（软件需常开）</p>
-<p><strong>出问题先做三件事</strong>：① 看「执行日志」最后一行 ② 确认是管理员权限运行 ③ 认图不行就重截图 + 阈值降到 0.70</p>
+<p><strong>卡住不动</strong>：默认 5 分钟自动停；想改就去 截图高级设置 → 防死机保护</p>
+<p><strong>出问题先做三件事</strong>：① 看「执行日志」最后一行（先按颜色扫） ② 确认是管理员权限运行 ③ 认图不行就重截图 + 阈值降到 0.70</p>
+<p><strong>自己打包</strong>：双击 <code>打包python为软件.bat</code>（会自动关掉运行中的旧程序，产物在 <code>dist\喵想奇记.exe</code>）</p>
   </main>
 </div>
 </body>

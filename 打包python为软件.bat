@@ -1,39 +1,103 @@
 @echo off
-chcp 65001 > nul
-title å–µæƒ³å¥‡è®°æ‰“åŒ…ç¨‹åº
+setlocal
+cd /d "%~dp0"
+title ß÷ÏëÆæ¼Ç´ò°ü³ÌÐò
 
-echo æ­£åœ¨å®‰è£…ä¾èµ–åº“...
-pip install pyinstaller pynput pillow
+echo ============================================
+echo     ß÷ÏëÆæ¼Ç Ò»¼ü´ò°ü
+echo ============================================
+echo.
 
-echo æ­£åœ¨æ£€æŸ¥å›¾æ ‡æ–‡ä»¶...
+rem ---------- 0. ¼ì²éÔ´ÎÄ¼þ ----------
+if not exist "automation_app.py" (
+    echo [´íÎó] µ±Ç°Ä¿Â¼Ã»ÓÐ automation_app.py
+    echo        Çë°Ñ±¾ bat ·Åµ½ automation_app.py Í¬Ò»Ä¿Â¼ÔÙÔËÐÐ¡£
+    pause
+    exit /b 1
+)
 if not exist "app_icon.ico" (
-    echo é”™è¯¯ï¼šæœªæ‰¾åˆ°å›¾æ ‡æ–‡ä»¶ app_icon.icoï¼
+    echo [´íÎó] Ã»ÓÐÕÒµ½Í¼±êÎÄ¼þ app_icon.ico
     pause
     exit /b 1
 )
 
-echo æ­£åœ¨æ‰“åŒ…åº”ç”¨ç¨‹åº...
-pyinstaller --onefile ^
-            --windowed ^
-            --icon=app_icon.ico ^
-            --name "å–µæƒ³å¥‡è®°" ^
-            --clean ^
-            --noconfirm ^
-            automation_app.py
-
+rem ---------- 1. ÕÒ¿ÉÓÃµÄ Python ----------
+set "PY="
+where py >nul 2>nul && set "PY=py -3"
+if not defined PY where python >nul 2>nul && set "PY=python"
+if not defined PY (
+    echo [´íÎó] Ã»ÕÒµ½ Python¡£ÇëÏÈ°²×° Python 3£¬°²×°Ê±¹´Ñ¡ Add Python to PATH¡£
+    pause
+    exit /b 1
+)
+echo [1/5] Ê¹ÓÃµÄ Python:
+%PY% --version
 if errorlevel 1 (
-    echo æ‰“åŒ…è¿‡ç¨‹ä¸­å‡ºçŽ°é”™è¯¯ï¼
+    echo [´íÎó] Python ÎÞ·¨Õý³£ÔËÐÐ£¬Çë¼ì²é°²×°¡£
     pause
     exit /b 1
 )
+echo.
 
+rem ---------- 2. ÏÈ¹ØµôÕýÔÚÔËÐÐµÄ¾É³ÌÐò£¨¹Ø¼ü²½Öè£© ----------
+echo [2/5] ¹Ø±Õ¿ÉÄÜÕýÔÚÔËÐÐµÄ¾É³ÌÐò...
+taskkill /F /IM "ß÷ÏëÆæ¼Ç.exe" >nul 2>nul
+if errorlevel 1 (
+    echo        Ã»ÓÐÕýÔÚÔËÐÐµÄ¾É³ÌÐò¡£
+) else (
+    echo        ¼ì²âµ½¾É³ÌÐòÔÚÔËÐÐ£¬ÒÑ×Ô¶¯¹Ø±Õ£¨·ñÔò exe ±»Õ¼ÓÃ»áµ¼ÖÂ´ò°üÊ§°Ü£©¡£
+    ping -n 3 127.0.0.1 >nul
+)
 echo.
-echo æ‰“åŒ…æˆåŠŸå®Œæˆï¼
-echo å¯æ‰§è¡Œæ–‡ä»¶è·¯å¾„ï¼š%~dp0dist\å–µæƒ³å¥‡è®°.exe
+
+rem ---------- 3. ¼ì²é / °²×°´ò°üÒÀÀµ ----------
+echo [3/5] ¼ì²é´ò°üÒÀÀµ£¨Ê×´ÎÐèÒªÁªÍø£¬¿ÉÄÜÉÔÂý£©...
+%PY% -m PyInstaller --version >nul 2>nul
+if errorlevel 1 (
+    echo        Î´°²×° PyInstaller£¬ÕýÔÚ°²×°...
+    %PY% -m pip install --disable-pip-version-check pyinstaller
+)
+%PY% -c "import pynput, PIL, cv2, numpy" >nul 2>nul
+if errorlevel 1 (
+    echo        È±ÉÙÔËÐÐÒÀÀµ£¬ÕýÔÚ²¹Æë...
+    %PY% -m pip install --disable-pip-version-check pynput pillow opencv-python numpy
+)
+echo        ÒÀÀµ¼ì²éÍê³É¡£
 echo.
-echo æ³¨æ„äº‹é¡¹ï¼š
-echo 1. è¯·ç¡®ä¿ scripts ç›®å½•ä¸Žå¯æ‰§è¡Œæ–‡ä»¶åœ¨ç›¸åŒç›®å½•
-echo 2. é¦–æ¬¡è¿è¡Œæ—¶å¯èƒ½éœ€è¦ä»¥ç®¡ç†å‘˜æƒé™è¿è¡Œ
-echo 3. æ€æ¯’è½¯ä»¶å¯èƒ½ä¼šè¯¯æŠ¥ï¼Œè¯·æ·»åŠ ä¿¡ä»»
+
+rem ---------- 4. ´ò°ü ----------
+echo [4/5] ¿ªÊ¼´ò°ü£¨Ô¼ 1-3 ·ÖÖÓ£¬ÇëÎð¹Ø±Õ´°¿Ú£©...
+if exist "build" rmdir /s /q "build" >nul 2>nul
+%PY% -m PyInstaller --onefile --windowed --icon=app_icon.ico --name "ß÷ÏëÆæ¼Ç" --add-data "scripts;scripts" --clean --noconfirm automation_app.py
+if errorlevel 1 goto BUILD_FAIL
+if not exist "dist\ß÷ÏëÆæ¼Ç.exe" goto BUILD_FAIL
+
+rem ---------- 5. Íê³É ----------
+echo.
+echo [5/5] ´ò°ü³É¹¦!
+echo        Êä³öÎÄ¼þ: %CD%\dist\ß÷ÏëÆæ¼Ç.exe
+for %%F in ("dist\ß÷ÏëÆæ¼Ç.exe") do echo        ÎÄ¼þ´óÐ¡: %%~zF ×Ö½Ú
+echo.
+echo Ê¹ÓÃÌáÊ¾:
+echo    1. Ë«»÷Ã»·´Ó¦Ê±£¬ÏÈ¼ì²éÊÇ·ñ±»É±¶¾Èí¼þÀ¹½Ø£¨Ìí¼ÓÐÅÈÎ¼´¿É£©
+echo    2. ÐèÒª²Ù×÷¹ÜÀíÔ±´°¿ÚµÄ¹¦ÄÜ£¬ÇëÓÒ¼ü exe Ñ¡Ôñ"ÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ"
+echo    3. ½ØÍ¼Ê¶±ðµÄÍ¼Æ¬ÓëÈÎÎñÅäÖÃ±£´æÔÚ %APPDATA%\MiaoXiangQiJi Ä¿Â¼
 echo.
 pause
+exit /b 0
+
+:BUILD_FAIL
+echo.
+echo ============ ´ò°üÊ§°Ü ============
+echo ³£¼ûÔ­ÒòÓë´¦Àí°ì·¨:
+echo    1. dist\ß÷ÏëÆæ¼Ç.exe ÕýÔÚÔËÐÐ±»Õ¼ÓÃ - ÏÈ¹Øµô³ÌÐòÔÙ´ò°ü£¨±¾½Å±¾ÒÑ×Ô¶¯¹Ø±Õ£¬
+echo       ÈôÈÔÊ§°ÜÇëÓÃÈÎÎñ¹ÜÀíÆ÷½áÊø ß÷ÏëÆæ¼Ç.exe ÔÙÊÔ£©
+echo    2. Ã»ÓÐ PyInstaller - ÃüÁîÐÐÖ´ÐÐ: %PY% -m pip install pyinstaller
+echo    3. È±ÉÙÒÀÀµ¿â - ÃüÁîÐÐÖ´ÐÐ: %PY% -m pip install pynput pillow opencv-python numpy
+echo    4. É±¶¾Èí¼þÀ¹½Ø´ò°ü¹ý³Ì - ÁÙÊ±¹Ø±ÕÉ±¶¾»ò°Ñ±¾ÎÄ¼þ¼Ð¼ÓÈëÐÅÈÎ
+echo    5. Â·¾¶º¬ÌØÊâ×Ö·û - °ÑÕû¸öÎÄ¼þ¼ÐÒÆµ½´¿Ó¢ÎÄÂ·¾¶£¨Èç D:/miaoxiang£©ÔÙÊÔ
+echo.
+echo °Ñ±¾´°¿ÚÀïµÄ±¨´íÄÚÈÝ½ØÍ¼·¢¸øÎÒ£¬ÎÒ¿ÉÒÔÖ±½Ó¶¨Î»ÎÊÌâ¡£
+echo.
+pause
+exit /b 1
