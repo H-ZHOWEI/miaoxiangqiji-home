@@ -1013,20 +1013,13 @@ class ScreenshotClickEngine:
                 self._delete_unused_image(branch.get("image_path"))
             raise
     
-    def add_branch_task_detailed(self, branches_details, threshold=0.75, action="左键单击",
-                                 wait_seconds=0.0, branch_timeout=0.0,
-                                 key_combo="", key_text="", key_enter_after=False,
-                                 scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+    def _build_branch_node(self, branches_details, threshold=0.75, action="左键单击",
+                           wait_seconds=0.0, branch_timeout=0.0,
+                           key_combo="", key_text="", key_enter_after=False,
+                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
         """
-        添加条件分支任务（详细版）
-        branches_details: list of dict, each dict must contain:
-            - 'image_path': 截图文件路径
-            - 'anchor_x' (optional): 基准点x，默认图片中心
-            - 'anchor_y' (optional): 基准点y，默认图片中心
-            - 'offset_x' (optional): x偏移，默认0
-            - 'offset_y' (optional): y偏移，默认0
-        threshold, action, wait_seconds 为全局统一参数
-        branch_timeout: 等待超时秒数，0 表示无限等待
+        构建一个条件分支节点（不加入任务列表）。
+        已经在截图图片目录里的图片会被原样复用（编辑分支时不重复拷贝）。
         """
         if not branches_details:
             raise ValueError("分支节点至少需要一张截图")
@@ -1036,7 +1029,13 @@ class ScreenshotClickEngine:
                 image_path = detail.get('image_path')
                 if not image_path or not os.path.exists(image_path):
                     raise FileNotFoundError(f"截图文件不存在：{image_path}")
-                target, display_name = self._copy_image(image_path)
+                src = Path(image_path)
+                if src.parent == self.image_dir and src.exists():
+                    # 编辑模式：内部图片直接复用，保留原 display_name
+                    target = str(src)
+                    display_name = str(detail.get('display_name') or src.name)
+                else:
+                    target, display_name = self._copy_image(image_path)
                 with Image.open(target) as img:
                     w, h = img.size
                 anchor_x = detail.get('anchor_x')
@@ -1061,19 +1060,95 @@ class ScreenshotClickEngine:
                     "scroll_notches": max(1, int(detail.get('scroll_notches', scroll_notches))),
                     "stop_after_hits": max(0, int(detail.get('stop_after_hits', stop_after_hits)))
                 })
-            with self.lock:
-                self.tasks.append({
-                    "type":           "branch",
-                    "display_name":   "条件分支",
-                    "branches":       branches,
-                    "branch_timeout": max(0.0, float(branch_timeout)),
-                    "repeat_until_miss": bool(repeat_until_miss)
-                })
-                self.save_tasks()
+            return {
+                "type":           "branch",
+                "display_name":   "条件分支",
+                "branches":       branches,
+                "branch_timeout": max(0.0, float(branch_timeout)),
+                "repeat_until_miss": bool(repeat_until_miss)
+            }
         except Exception:
             for branch in branches:
                 self._delete_unused_image(branch.get("image_path"))
             raise
+
+    def add_branch_task_detailed(self, branches_details, threshold=0.75, action="左键单击",
+                                 wait_seconds=0.0, branch_timeout=0.0,
+                                 key_combo="", key_text="", key_enter_after=False,
+                                 scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+        """
+        添加条件分支任务（详细版）
+        branches_details: list of dict, each dict must contain:
+            - 'image_path': 截图文件路径
+            - 'anchor_x' (optional): 基准点x，默认图片中心
+            - 'anchor_y' (optional): 基准点y，默认图片中心
+            - 'offset_x' (optional): x偏移，默认0
+            - 'offset_y' (optional): y偏移，默认0
+        threshold, action, wait_seconds 为全局统一参数
+        branch_timeout: 等待超时秒数，0 表示无限等待
+        """
+        node = self._build_branch_node(
+            branches_details, threshold=threshold, action=action, wait_seconds=wait_seconds,
+            branch_timeout=branch_timeout, key_combo=key_combo, key_text=key_text,
+            key_enter_after=key_enter_after, scroll_notches=scroll_notches,
+            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss)
+        with self.lock:
+            self.tasks.append(node)
+            self.save_tasks()
+
+    def update_branch_task(self, index, branches_details, threshold=0.75, action="左键单击",
+                           wait_seconds=0.0, branch_timeout=0.0,
+                           key_combo="", key_text="", key_enter_after=False,
+                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+        """就地更新一个条件分支节点（保留任务位置）；不再使用的旧截图会被自动清理。"""
+        with self.lock:
+            if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "branch":
+                raise ValueError("目标位置不是条件分支节点")
+            old_paths = [b.get("image_path") for b in self.tasks[index].get("branches", [])]
+        node = self._build_branch_node(
+            branches_details, threshold=threshold, action=action, wait_seconds=wait_seconds,
+            branch_timeout=branch_timeout, key_combo=key_combo, key_text=key_text,
+            key_enter_after=key_enter_after, scroll_notches=scroll_notches,
+            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss)
+        with self.lock:
+            self.tasks[index] = node
+            self.save_tasks()
+        # 清理旧节点中已不再被任何任务使用的截图
+        for path in old_paths:
+            self._delete_unused_image(path)
+
+    def replace_task_image(self, index, new_image_path):
+        """更换普通截图任务的截图文件：保留任务位置与全部设置，仅替换图片。"""
+        if not new_image_path or not os.path.exists(new_image_path):
+            raise FileNotFoundError(f"截图文件不存在：{new_image_path}")
+        with self.lock:
+            if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "normal":
+                raise ValueError("目标位置不是普通截图任务")
+            task = self.tasks[index]
+            old_path = task.get("image_path")
+            new_target, display_name = self._copy_image(new_image_path)
+            task["image_path"] = new_target
+            task["display_name"] = display_name
+            self.save_tasks()
+        self._delete_unused_image(old_path)
+
+    def replace_branch_image(self, task_index, branch_index, new_image_path):
+        """更换条件分支中某个候选截图的图片文件：保留锚点/偏移等设置，仅替换图片。"""
+        if not new_image_path or not os.path.exists(new_image_path):
+            raise FileNotFoundError(f"截图文件不存在：{new_image_path}")
+        with self.lock:
+            if not (0 <= task_index < len(self.tasks)) or self.tasks[task_index].get("type", "normal") != "branch":
+                raise ValueError("目标位置不是条件分支节点")
+            branches = self.tasks[task_index].get("branches", [])
+            if not (0 <= branch_index < len(branches)):
+                raise ValueError("候选截图序号超出范围")
+            branch = branches[branch_index]
+            old_path = branch.get("image_path")
+            new_target, display_name = self._copy_image(new_image_path)
+            branch["image_path"] = new_target
+            branch["display_name"] = display_name
+            self.save_tasks()
+        self._delete_unused_image(old_path)
     
     def update_task(self, index, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                     threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
@@ -3480,13 +3555,61 @@ class AutomationApp(tk.Tk):
         index = selected[0]
         task = self.screenshot_engine.tasks[index]
         if task.get("type", "normal") == "branch":
-            messagebox.showinfo("条件分支", "当前版本可通过删除后重新添加来修改分支候选截图。", parent=self)
+            self.add_screenshot_branch_task(edit_index=index)
             return
         self.open_screenshot_task_editor(
             file_path=task["image_path"],
             task_index=index,
             task=task
         )
+
+    def replace_screenshot_image(self):
+        """更换选中任务的截图文件：普通任务直接换图；条件分支先选候选再换图。保留任务位置与全部设置。"""
+        selected = self.screenshot_task_list.curselection()
+        if not selected:
+            messagebox.showwarning("提示", "请先选择要更换截图的任务")
+            return
+        index = selected[0]
+        task = self.screenshot_engine.tasks[index]
+        branch_index = None
+        if task.get("type", "normal") == "branch":
+            branches = task.get("branches", [])
+            if not branches:
+                messagebox.showwarning("提示", "该分支节点没有候选截图")
+                return
+            if len(branches) == 1:
+                branch_index = 0
+            else:
+                names = "\n".join(
+                    f"{i + 1}. {b.get('display_name', '截图')}" for i, b in enumerate(branches))
+                answer = simpledialog.askstring(
+                    "选择候选截图",
+                    f"该分支有 {len(branches)} 个候选截图，请输入要更换的序号：\n{names}",
+                    parent=self)
+                if not answer:
+                    return
+                try:
+                    branch_index = int(answer.strip()) - 1
+                except ValueError:
+                    branch_index = -1
+                if not (0 <= branch_index < len(branches)):
+                    messagebox.showwarning("提示", "序号无效，已取消更换", parent=self)
+                    return
+        file_path = filedialog.askopenfilename(
+            title="选择新的截图",
+            filetypes=[("图片文件", "*.png;*.jpg;*.jpeg;*.bmp")])
+        if not file_path:
+            return
+        try:
+            if branch_index is None:
+                self.screenshot_engine.replace_task_image(index, file_path)
+                self.log_message(f"已更换截图：{os.path.basename(file_path)}（保留任务位置与全部设置）")
+            else:
+                self.screenshot_engine.replace_branch_image(index, branch_index, file_path)
+                self.log_message(f"已更换候选截图：{os.path.basename(file_path)}（保留锚点与偏移）")
+            self.refresh_screenshot_task_list()
+        except Exception as e:
+            messagebox.showerror("更换失败", str(e), parent=self)
     
     def open_screenshot_task_editor(self, file_path, task_index=None, task=None):
         try:
@@ -3845,10 +3968,20 @@ class AutomationApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("删除失败", str(e), parent=self)
     
-    def add_screenshot_branch_task(self):
-        """添加条件分支（增强版：可逐个设置每张截图的锚点与偏移，并支持超时跳过）"""
+    def add_screenshot_branch_task(self, edit_index=None):
+        """添加条件分支（增强版：可逐个设置每张截图的锚点与偏移，并支持超时跳过）。
+        edit_index 不为空时进入编辑模式：就地修改该分支节点，保留任务位置。"""
+        existing = None
+        if edit_index is not None:
+            try:
+                existing = self.screenshot_engine.tasks[edit_index]
+            except IndexError:
+                existing = None
+            if existing is None or existing.get("type", "normal") != "branch":
+                messagebox.showwarning("提示", "目标位置不是条件分支节点")
+                return
         dialog = tk.Toplevel(self)
-        dialog.title("添加条件分支 - 编辑候选截图")
+        dialog.title("编辑条件分支 - 修改候选截图" if existing is not None else "添加条件分支 - 编辑候选截图")
         try:
             screen_h = dialog.winfo_screenheight()
             screen_w = dialog.winfo_screenwidth()
@@ -3868,12 +4001,22 @@ class AutomationApp(tk.Tk):
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=8)
         
         branch_items = []
-        
+
         # 全局参数
         global_threshold = tk.DoubleVar(value=0.75)
         global_action = tk.StringVar(value="左键单击")
         global_wait = tk.DoubleVar(value=0.0)
         global_timeout = tk.DoubleVar(value=0.0)  # 新增：分支超时
+
+        # 编辑模式：用现有节点预填
+        if existing is not None:
+            branches0 = existing.get("branches", [])
+            ref = branches0[0] if branches0 else {}
+            global_threshold.set(float(ref.get("threshold", 0.75)))
+            global_action.set(ref.get("action", "左键单击"))
+            global_wait.set(float(ref.get("wait_seconds", 0.0)))
+            global_timeout.set(float(existing.get("branch_timeout", 0.0)))
+            branch_items = [dict(b) for b in branches0]
         
         # ---- 左侧：列表 ----
         left_frame = ttk.LabelFrame(dialog, text="候选截图列表", padding=5)
@@ -3926,8 +4069,27 @@ class AutomationApp(tk.Tk):
             current = branch_items[index]
             new_settings = self._open_single_branch_editor(current['image_path'], current)
             if new_settings is not None:
-                branch_items[index] = new_settings
+                # 保留原有附加信息（display_name 等），仅更新锚点与偏移
+                merged = dict(current)
+                merged.update(new_settings)
+                branch_items[index] = merged
                 refresh_list()
+
+        def replace_branch_item_image():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            index = sel[0]
+            file_path = filedialog.askopenfilename(
+                title="选择新的候选截图（保留锚点与偏移）",
+                filetypes=[("图片文件", "*.png;*.jpg;*.jpeg;*.bmp")]
+            )
+            if not file_path:
+                return
+            current = dict(branch_items[index])
+            current['image_path'] = file_path
+            branch_items[index] = current
+            refresh_list()
         
         def move_up():
             sel = listbox.curselection()
@@ -3949,6 +4111,7 @@ class AutomationApp(tk.Tk):
         
         ttk.Button(list_btn_frame, text="添加截图", command=add_branch_item).pack(side=tk.LEFT, padx=2)
         ttk.Button(list_btn_frame, text="编辑", command=edit_branch_item).pack(side=tk.LEFT, padx=2)
+        ttk.Button(list_btn_frame, text="换图", command=replace_branch_item_image).pack(side=tk.LEFT, padx=2)
         ttk.Button(list_btn_frame, text="删除", command=remove_branch_item).pack(side=tk.LEFT, padx=2)
         ttk.Button(list_btn_frame, text="上移", command=move_up).pack(side=tk.LEFT, padx=2)
         ttk.Button(list_btn_frame, text="下移", command=move_down).pack(side=tk.LEFT, padx=2)
@@ -3970,9 +4133,9 @@ class AutomationApp(tk.Tk):
                      values=SCREENSHOT_ACTIONS).grid(row=2, column=1, sticky='w')
         
         # 键盘操作（全局）
-        global_key_combo = tk.StringVar(value="enter")
-        global_key_text = tk.StringVar(value="")
-        global_key_enter = tk.BooleanVar(value=False)
+        global_key_combo = tk.StringVar(value=(ref.get("key_combo") or "enter") if existing else "enter")
+        global_key_text = tk.StringVar(value=str(ref.get("key_text", "")) if existing else "")
+        global_key_enter = tk.BooleanVar(value=bool(ref.get("key_enter_after", False)) if existing else False)
         
         ttk.Label(right_frame, text="按键组合：").grid(row=3, column=0, sticky='e', pady=5)
         ttk.Combobox(right_frame, textvariable=global_key_combo, width=20, state='normal',
@@ -3991,19 +4154,20 @@ class AutomationApp(tk.Tk):
         ttk.Spinbox(right_frame, from_=0, to=86400, increment=0.5,
                     textvariable=global_timeout, width=12).grid(row=6, column=1, sticky='w')
 
-        global_scroll_notches = tk.IntVar(value=5)
+        global_scroll_notches = tk.IntVar(value=int(ref.get("scroll_notches", 5) or 5) if existing else 5)
         ttk.Label(right_frame, text="滚动格数：").grid(row=7, column=0, sticky='e', pady=5)
         ttk.Spinbox(right_frame, from_=1, to=50, textvariable=global_scroll_notches,
                     width=12).grid(row=7, column=1, sticky='w')
 
-        global_stop_after_hits = tk.IntVar(value=0)
+        global_stop_after_hits = tk.IntVar(
+            value=max((int(b.get("stop_after_hits", 0) or 0) for b in branch_items), default=0) if existing else 0)
         ttk.Label(right_frame, text="命中目标：").grid(row=8, column=0, sticky='e', pady=5)
         ttk.Spinbox(right_frame, from_=0, to=9999, textvariable=global_stop_after_hits,
                     width=12).grid(row=8, column=1, sticky='w')
         ttk.Label(right_frame, text="次（0=不限）", foreground="gray").grid(
             row=8, column=2, sticky='w', padx=(4, 0))
 
-        global_repeat_until_miss = tk.BooleanVar(value=False)
+        global_repeat_until_miss = tk.BooleanVar(value=bool(existing.get("repeat_until_miss", False)) if existing else False)
         ttk.Checkbutton(right_frame, text="命中后连续执行（点完当前画面上所有可见目标，直到超时未命中才进入下一任务）",
                         variable=global_repeat_until_miss).grid(
             row=9, column=0, columnspan=3, sticky='w', pady=(0, 5))
@@ -4036,6 +4200,26 @@ class AutomationApp(tk.Tk):
                 messagebox.showerror("错误", "选择了“输入文本”，请输入要输入的文字", parent=dialog)
                 return
             try:
+                if existing is not None:
+                    self.screenshot_engine.update_branch_task(
+                        edit_index,
+                        branches_details=branch_items,
+                        threshold=global_threshold.get(),
+                        action=action,
+                        wait_seconds=global_wait.get(),
+                        branch_timeout=global_timeout.get(),
+                        key_combo=key_combo,
+                        key_text=key_text,
+                        key_enter_after=bool(global_key_enter.get()),
+                        scroll_notches=int(global_scroll_notches.get()),
+                        stop_after_hits=int(global_stop_after_hits.get()),
+                        repeat_until_miss=bool(global_repeat_until_miss.get())
+                    )
+                    self.refresh_screenshot_task_list()
+                    self.log_message(
+                        f"已更新条件分支：{len(branch_items)} 个候选截图（保留原任务位置）")
+                    dialog.destroy()
+                    return
                 self.screenshot_engine.add_branch_task_detailed(
                     branches_details=branch_items,
                     threshold=global_threshold.get(),
@@ -4057,7 +4241,8 @@ class AutomationApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("添加失败", str(e), parent=dialog)
         
-        ttk.Button(btn_frame, text="保存分支", style="Primary.TButton", command=confirm).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="保存修改" if existing is not None else "保存分支",
+                   style="Primary.TButton", command=confirm).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
         
         refresh_list()
@@ -5126,6 +5311,7 @@ class AutomationApp(tk.Tk):
         shot_ops.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Button(shot_ops, text="添加截图", command=self.add_screenshot_task).pack(side=tk.LEFT, padx=2)
         ttk.Button(shot_ops, text="编辑操作", command=self.edit_screenshot_task).pack(side=tk.LEFT, padx=2)
+        ttk.Button(shot_ops, text="更换截图", command=self.replace_screenshot_image).pack(side=tk.LEFT, padx=2)
         ttk.Button(shot_ops, text="添加条件分支", command=self.add_screenshot_branch_task).pack(side=tk.LEFT, padx=2)
         ttk.Button(shot_ops, text="上移", width=4,
                    command=self.move_screenshot_task_up).pack(side=tk.RIGHT, padx=2)
