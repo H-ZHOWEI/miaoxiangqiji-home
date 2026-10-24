@@ -970,7 +970,7 @@ class ScreenshotClickEngine:
     def add_task(self, image_path, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                  threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
                  key_combo="", key_text="", key_enter_after=False, scroll_notches=5,
-                 stop_after_hits=0):
+                 stop_after_hits=0, adaptive_scroll=False):
         target, display_name = self._copy_image(image_path)
         with self.lock:
             self.tasks.append({
@@ -985,7 +985,8 @@ class ScreenshotClickEngine:
                 "key_text":     str(key_text or ""),
                 "key_enter_after": bool(key_enter_after),
                 "scroll_notches": max(1, int(scroll_notches)),
-                "stop_after_hits": max(0, int(stop_after_hits))
+                "stop_after_hits": max(0, int(stop_after_hits)),
+                "adaptive_scroll": bool(adaptive_scroll)
             })
             self.save_tasks()
 
@@ -1015,7 +1016,7 @@ class ScreenshotClickEngine:
     def add_branch_task_detailed(self, branches_details, threshold=0.75, action="左键单击",
                                  wait_seconds=0.0, branch_timeout=0.0,
                                  key_combo="", key_text="", key_enter_after=False,
-                                 scroll_notches=5, stop_after_hits=0):
+                                 scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
         """
         添加条件分支任务（详细版）
         branches_details: list of dict, each dict must contain:
@@ -1065,7 +1066,8 @@ class ScreenshotClickEngine:
                     "type":           "branch",
                     "display_name":   "条件分支",
                     "branches":       branches,
-                    "branch_timeout": max(0.0, float(branch_timeout))
+                    "branch_timeout": max(0.0, float(branch_timeout)),
+                    "repeat_until_miss": bool(repeat_until_miss)
                 })
                 self.save_tasks()
         except Exception:
@@ -1076,7 +1078,7 @@ class ScreenshotClickEngine:
     def update_task(self, index, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                     threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
                     key_combo="", key_text="", key_enter_after=False, scroll_notches=5,
-                    stop_after_hits=0):
+                    stop_after_hits=0, adaptive_scroll=False):
         with self.lock:
             if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "normal":
                 return False
@@ -1092,7 +1094,8 @@ class ScreenshotClickEngine:
                 "key_text":     str(key_text or ""),
                 "key_enter_after": bool(key_enter_after),
                 "scroll_notches": max(1, int(scroll_notches)),
-                "stop_after_hits": max(0, int(stop_after_hits))
+                "stop_after_hits": max(0, int(stop_after_hits)),
+                "adaptive_scroll": bool(adaptive_scroll)
             })
             self.save_tasks()
             return True
@@ -1362,24 +1365,46 @@ class ScreenshotClickEngine:
         names = " / ".join(b.get("display_name", "分支") for b in branches)
         # 获取超时设置（秒），0 或 None 表示无限等待
         timeout_seconds = float(task.get("branch_timeout", 0.0))
+        # 命中后连续执行：点完当前画面上所有可见目标（直到超时未命中）才进入下一个任务
+        repeat_until_miss = bool(task.get("repeat_until_miss", False))
         start_time = time.time()
-        
+        node_hits = 0
+
         while self.running:
             # 防死机：分支即使设为无限等待，也不能真的无限等下去
             if self._check_step_timeout(start_time, task_number, total,
                                         task.get("display_name") or "条件分支"):
                 return False
             # 同时识别所有候选分支
+            repeat_round = False
+            executed_once = False
             for branch in branches:
                 match = self._find_on_screen(branch)
-                if match:
-                    # 命中某一个分支，只执行该分支的操作，然后立即进入下一步
-                    if self._execute_match(branch, match, task_number, total):
-                        self.app.log_message(
-                            f"分支节点 {task_number}/{total} 命中：{branch.get('display_name', '截图')}，"
-                            f"执行该分支操作后进入下一任务")
-                        return True
+                if not match:
+                    continue
+                # 命中某一个分支，执行该分支的操作
+                if not self._execute_match(branch, match, task_number, total):
                     return False
+                if not self.running:
+                    return False  # 命中目标已达成或被手动停止
+                node_hits += 1
+                if repeat_until_miss:
+                    start_time = time.time()  # 刚命中过，重新给一段完整的等待时间
+                    self.app.log_message(
+                        f"分支节点 {task_number}/{total} 命中：{branch.get('display_name', '截图')}"
+                        f"（本节点第 {node_hits} 次），继续寻找下一个")
+                    repeat_round = True
+                else:
+                    self.app.log_message(
+                        f"分支节点 {task_number}/{total} 命中：{branch.get('display_name', '截图')}，"
+                        f"执行该分支操作后进入下一任务")
+                    executed_once = True
+                break
+
+            if repeat_round:
+                continue
+            if executed_once:
+                return True
             
             # 检查是否超时
             if timeout_seconds > 0:
@@ -1426,6 +1451,11 @@ class ScreenshotClickEngine:
         # 滚轮滚动：滚轮事件作用于鼠标所在位置，先移到屏幕中央再滚
         if action in SCROLL_ACTIONS:
             notches = max(1, int(task.get("scroll_notches", 5) or 5))
+            extra = 0
+            # 自适应加滚：连续 N 轮"滚完也没找到目标"时，每轮多滚 1 格；一旦命中即清零回到基础格数
+            if task.get("adaptive_scroll"):
+                extra = max(0, int(getattr(self, "_skip_streak", 0)) - 1)
+                notches = min(500, notches + extra)
             dy = -notches if action == "滚轮上滚" else notches
             try:
                 controller = self.app.player.mouse_controller
@@ -1443,7 +1473,8 @@ class ScreenshotClickEngine:
                 return False
             self.app.log_message(
                 f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，"
-                f"滚轮{'上' if dy < 0 else '下'}滚 {notches} 格")
+                f"滚轮{'上' if dy < 0 else '下'}滚 {notches} 格"
+                + (f"（基础 {task.get('scroll_notches', 5)} 格 + 连续未命中加滚 {extra} 格）" if extra else ""))
             self._after_success(task)
             return True
         # 键盘类操作不移动鼠标，避免影响当前焦点位置
@@ -1649,7 +1680,9 @@ class ScreenshotClickEngine:
                         item.setdefault("key_enter_after", False)
                         item.setdefault("scroll_notches", 5)
                         item.setdefault("stop_after_hits", 0)
+                        item.setdefault("adaptive_scroll", False)
                     elif item.get("type") == "branch":
+                        item.setdefault("repeat_until_miss", False)
                         for branch in item.get("branches", []):
                             branch.setdefault("action", "左键单击")
                             branch.setdefault("key_combo", "")
@@ -3601,6 +3634,9 @@ class AutomationApp(tk.Tk):
         scroll_notches_var = tk.IntVar(value=int((task or {}).get("scroll_notches", 5) or 5))
         ttk.Spinbox(row_scroll, from_=1, to=50, textvariable=scroll_notches_var,
                     width=10).pack(side=tk.LEFT, padx=5)
+        adaptive_scroll_var = tk.BooleanVar(value=bool((task or {}).get("adaptive_scroll", False)))
+        ttk.Checkbutton(row_scroll, text="未命中时自动加滚（每连续空滚一轮多滚 1 格，命中后恢复）",
+                        variable=adaptive_scroll_var).pack(side=tk.LEFT, padx=(10, 0))
         ttk.Label(row_scroll, text="格（仅“滚轮上滚/下滚”时使用，1 格 ≈ 3 行文字，配合分支超时可做“滚动翻页”）",
                   foreground="gray").pack(side=tk.LEFT)
 
@@ -3714,7 +3750,8 @@ class AutomationApp(tk.Tk):
                         key_text=key_text,
                         key_enter_after=bool(key_enter_var.get()),
                         scroll_notches=int(scroll_notches_var.get()),
-                        stop_after_hits=int(stop_after_hits_var.get())
+                        stop_after_hits=int(stop_after_hits_var.get()),
+                        adaptive_scroll=bool(adaptive_scroll_var.get())
                     )
                     self.log_message(f"已添加截图任务：{os.path.basename(file_path)} / {action}")
                 else:
@@ -3732,7 +3769,8 @@ class AutomationApp(tk.Tk):
                         key_text=key_text,
                         key_enter_after=bool(key_enter_var.get()),
                         scroll_notches=int(scroll_notches_var.get()),
-                        stop_after_hits=int(stop_after_hits_var.get())
+                        stop_after_hits=int(stop_after_hits_var.get()),
+                        adaptive_scroll=bool(adaptive_scroll_var.get())
                     )
                     self.log_message(f"已更新截图任务：{task.get('display_name', os.path.basename(file_path))}")
                 self.refresh_screenshot_task_list()
@@ -3965,15 +4003,20 @@ class AutomationApp(tk.Tk):
         ttk.Label(right_frame, text="次（0=不限）", foreground="gray").grid(
             row=8, column=2, sticky='w', padx=(4, 0))
 
+        global_repeat_until_miss = tk.BooleanVar(value=False)
+        ttk.Checkbutton(right_frame, text="命中后连续执行（点完当前画面上所有可见目标，直到超时未命中才进入下一任务）",
+                        variable=global_repeat_until_miss).grid(
+            row=9, column=0, columnspan=3, sticky='w', pady=(0, 5))
+
         ttk.Label(right_frame,
                   text="操作选择“键盘按键”时回放按键组合；选择“输入文本”时输入上面的文字；\n"
                        "“滚轮上滚/下滚”按上面的格数滚动（滚轮事件作用于鼠标所在位置，会先移到屏幕中央）。\n"
                        "0 = 无限等待直到某个分支出现；\n大于0 = 超时后自动跳过该分支节点，继续主线下一个任务；\n"
                        "命中目标 = 该分支累计成功执行 N 次后，整个截图流程自动停止（配合“整组循环”填大值使用）。",
-                  foreground="gray", justify=tk.LEFT).grid(row=9, column=0, columnspan=2, pady=8, sticky='w')
+                  foreground="gray", justify=tk.LEFT).grid(row=10, column=0, columnspan=2, pady=8, sticky='w')
 
         ttk.Label(right_frame, text="提示：双击列表项可编辑该分支的锚点与偏移",
-                  foreground="gray").grid(row=10, column=0, columnspan=2, pady=8)
+                  foreground="gray").grid(row=11, column=0, columnspan=2, pady=8)
         
         listbox.bind("<Double-Button-1>", lambda e: edit_branch_item())
         
@@ -4003,7 +4046,8 @@ class AutomationApp(tk.Tk):
                     key_text=key_text,
                     key_enter_after=bool(global_key_enter.get()),
                     scroll_notches=int(global_scroll_notches.get()),
-                    stop_after_hits=int(global_stop_after_hits.get())
+                    stop_after_hits=int(global_stop_after_hits.get()),
+                    repeat_until_miss=bool(global_repeat_until_miss.get())
                 )
                 self.refresh_screenshot_task_list()
                 timeout_text = f"{global_timeout.get():.1f}s" if global_timeout.get() > 0 else "无限等待"
@@ -4170,10 +4214,11 @@ class AutomationApp(tk.Tk):
                 timeout_text = f"超时{timeout:.1f}s跳过" if timeout > 0 else "无限等待"
                 hits = max((int(b.get("stop_after_hits", 0) or 0) for b in branches), default=0)
                 target_text = f"，🎯累计命中{hits}次后停止" if hits > 0 else ""
+                repeat_text = "，【连点】命中后连续执行" if task.get("repeat_until_miss") else ""
                 action_text = self._describe_action(branches[0] if branches else {})
                 self.screenshot_task_list.insert(
                     tk.END,
-                    f"{i + 1}. 【条件分支】命中任一即操作（{action_text}）并进入下一步：{names}（{timeout_text}{target_text}）"
+                    f"{i + 1}. 【条件分支】命中任一即操作（{action_text}）并进入下一步：{names}（{timeout_text}{target_text}{repeat_text}）"
                 )
                 continue
             name = task.get("display_name") or os.path.basename(task["image_path"])
@@ -4189,10 +4234,11 @@ class AutomationApp(tk.Tk):
             final_text = "中心" if ax is None or ay is None else f"({ax + ox},{ay + oy})"
             hits = int(task.get("stop_after_hits", 0) or 0)
             target_text = f" | 🎯累计命中{hits}次后停止" if hits > 0 else ""
+            adaptive_text = " | 未命中自动加滚" if task.get("adaptive_scroll") else ""
             self.screenshot_task_list.insert(
                 tk.END,
                 f"{i + 1}. {name} | {action_text}×{repeat_count}（每次重新识别） | 等待 {wait_seconds:g}s | "
-                f"基准 {point_text} → 最终 {final_text} | 阈值 {threshold:.2f}{target_text}"
+                f"基准 {point_text} → 最终 {final_text} | 阈值 {threshold:.2f}{target_text}{adaptive_text}"
             )
     
     def _describe_action(self, task):
