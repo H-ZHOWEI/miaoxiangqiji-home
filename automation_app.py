@@ -1464,10 +1464,15 @@ class ScreenshotClickEngine:
                     return False  # 命中目标已达成或被手动停止
                 node_hits += 1
                 if repeat_until_miss:
+                    # 连续点击间隔：默认至少 0.3 秒，避免连点太快；
+                    # 想更慢可以把该分支的「识别后等待」调大（间隔会跟随）
+                    pause = max(0.3, float(branch.get("wait_seconds", 0.0) or 0))
+                    if pause > 0 and not self._interruptible_wait(pause):
+                        return False
                     start_time = time.time()  # 刚命中过，重新给一段完整的等待时间
                     self.app.log_message(
                         f"分支节点 {task_number}/{total} 命中：{branch.get('display_name', '截图')}"
-                        f"（本节点第 {node_hits} 次），继续寻找下一个")
+                        f"（本节点第 {node_hits} 次），{pause:.1f} 秒后继续寻找下一个")
                     repeat_round = True
                 else:
                     self.app.log_message(
@@ -1531,7 +1536,8 @@ class ScreenshotClickEngine:
             if task.get("adaptive_scroll"):
                 extra = max(0, int(getattr(self, "_skip_streak", 0)) - 1)
                 notches = min(500, notches + extra)
-            dy = -notches if action == "滚轮上滚" else notches
+            # pynput 滚轮：正数 = 向上滚（滚轮朝上/远离身体），负数 = 向下滚
+            dy = notches if action == "滚轮上滚" else -notches
             try:
                 controller = self.app.player.mouse_controller
                 dpi = getattr(self.app, "dpi_scale", 1.0) or 1.0
@@ -1548,7 +1554,7 @@ class ScreenshotClickEngine:
                 return False
             self.app.log_message(
                 f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，"
-                f"滚轮{'上' if dy < 0 else '下'}滚 {notches} 格"
+                f"滚轮{'上' if dy > 0 else '下'}滚 {notches} 格"
                 + (f"（基础 {task.get('scroll_notches', 5)} 格 + 连续未命中加滚 {extra} 格）" if extra else ""))
             self._after_success(task)
             return True
