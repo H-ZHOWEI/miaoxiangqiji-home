@@ -193,7 +193,9 @@ TEXT_ACTION = "输入文本"
 MOUSE_ACTIONS = [
     "左键单击", "左键双击", "右键单击", "右键双击", "中键单击",
     "左键按下", "左键释放", "右键按下", "右键释放", "仅移动鼠标",
+    "滚轮下滚", "滚轮上滚",
 ]
+SCROLL_ACTIONS = ("滚轮下滚", "滚轮上滚")
 SCREENSHOT_ACTIONS = MOUSE_ACTIONS + [KEY_ACTION, TEXT_ACTION]
 
 KEY_TOKEN_ALIASES = {
@@ -824,6 +826,10 @@ class ScreenshotClickEngine:
         self.lock = Lock()
         # 防死机：单步（一次识别操作）最长等待时间，超过则自动停止当前任务
         self.step_timeout_seconds = 300.0
+        # 整组循环次数：一次启动里把任务列表从头到尾跑几遍
+        self.run_times = 1
+        self._loop_base = 0
+        self._loop_total = 0
         
         if sys.platform == "win32":
             base_dir = Path(os.environ.get("APPDATA", Path.home())) / "MiaoXiangQiJi"
@@ -958,7 +964,7 @@ class ScreenshotClickEngine:
     
     def add_task(self, image_path, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                  threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
-                 key_combo="", key_text="", key_enter_after=False):
+                 key_combo="", key_text="", key_enter_after=False, scroll_notches=5):
         target, display_name = self._copy_image(image_path)
         with self.lock:
             self.tasks.append({
@@ -971,7 +977,8 @@ class ScreenshotClickEngine:
                 "repeat_count": max(1, int(repeat_count)),
                 "key_combo":    str(key_combo or ""),
                 "key_text":     str(key_text or ""),
-                "key_enter_after": bool(key_enter_after)
+                "key_enter_after": bool(key_enter_after),
+                "scroll_notches": max(1, int(scroll_notches))
             })
             self.save_tasks()
     
@@ -1000,7 +1007,8 @@ class ScreenshotClickEngine:
     
     def add_branch_task_detailed(self, branches_details, threshold=0.75, action="左键单击",
                                  wait_seconds=0.0, branch_timeout=0.0,
-                                 key_combo="", key_text="", key_enter_after=False):
+                                 key_combo="", key_text="", key_enter_after=False,
+                                 scroll_notches=5):
         """
         添加条件分支任务（详细版）
         branches_details: list of dict, each dict must contain:
@@ -1041,7 +1049,8 @@ class ScreenshotClickEngine:
                     "wait_seconds": max(0.0, float(wait_seconds)),
                     "key_combo":    str(detail.get('key_combo', key_combo) or ""),
                     "key_text":     str(detail.get('key_text', key_text) or ""),
-                    "key_enter_after": bool(detail.get('key_enter_after', key_enter_after))
+                    "key_enter_after": bool(detail.get('key_enter_after', key_enter_after)),
+                    "scroll_notches": max(1, int(detail.get('scroll_notches', scroll_notches)))
                 })
             with self.lock:
                 self.tasks.append({
@@ -1058,7 +1067,7 @@ class ScreenshotClickEngine:
     
     def update_task(self, index, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                     threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
-                    key_combo="", key_text="", key_enter_after=False):
+                    key_combo="", key_text="", key_enter_after=False, scroll_notches=5):
         with self.lock:
             if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "normal":
                 return False
@@ -1072,7 +1081,8 @@ class ScreenshotClickEngine:
                 "repeat_count": max(1, int(repeat_count)),
                 "key_combo":    str(key_combo or ""),
                 "key_text":     str(key_text or ""),
-                "key_enter_after": bool(key_enter_after)
+                "key_enter_after": bool(key_enter_after),
+                "scroll_notches": max(1, int(scroll_notches))
             })
             self.save_tasks()
             return True
@@ -1107,13 +1117,18 @@ class ScreenshotClickEngine:
                 self._delete_unused_image(path)
             self.save_tasks()
     
-    def start(self):
+    def start(self, times=None):
         if self.running:
             self.app.log_message("截图流程已在运行")
             return
         if not self.tasks:
             self.app.log_message("当前截图组没有任务")
             return
+        if times is not None:
+            try:
+                self.run_times = max(1, min(9999, int(times)))
+            except Exception:
+                self.run_times = 1
         self.running = True
         self.stop_reason = ""
         self.current_index = 0
@@ -1165,36 +1180,77 @@ class ScreenshotClickEngine:
         return True
     
     def _report_progress(self):
-        """把截图流程进度推送到主界面进度条（已完成步数 / 总步数）"""
+        """把截图流程进度推送到主界面进度条（跨轮累计：已完成步数 / 总步数）"""
         try:
-            total = len(self.tasks)
-            done = max(0, min(self.current_index, total))
-            pct = (done / total * 100.0) if total else 0.0
-            detail = f"{done}/{total} 步" if total else ""
+            total_tasks = len(self.tasks)
+            base = int(getattr(self, "_loop_base", 0))
+            grand_total = int(getattr(self, "_loop_total", 0)) or total_tasks
+            done = base + max(0, min(self.current_index, total_tasks))
+            pct = (done / grand_total * 100.0) if grand_total else 0.0
+            detail = f"{done}/{grand_total} 步" if grand_total else ""
             app = self.app
             app.after(0, lambda p=pct, d=detail: app.update_progress(p, d))
         except Exception:
             pass
-    
+
     def _run_loop(self):
         group_name = self.active_group_name
-        self.app.log_message(f"截图流程组 [{group_name}] 开始运行")
+        times = max(1, int(getattr(self, "run_times", 1)))
+        total_tasks = len(self.tasks)
+        completed_rounds = 0
+        self.app.log_message(
+            f"截图流程组 [{group_name}] 开始运行" + (f"，共 {times} 轮" if times > 1 else ""))
+
+        for round_i in range(times):
+            if not self.running or not self.tasks:
+                break
+            if times > 1:
+                self.app.log_message(f"── 第 {round_i + 1}/{times} 轮 ──")
+            self.current_index = 0
+            self._loop_base = round_i * total_tasks
+            self._loop_total = times * total_tasks
+            self._report_progress()
+            finished = self._run_tasks_once(group_name)
+            if finished and self.running:
+                completed_rounds += 1
+                if round_i < times - 1:
+                    self._interruptible_wait(0.5)
+            else:
+                break
+
+        if not self.tasks:
+            return
+        if completed_rounds >= times and self.running:
+            self.app.log_message(
+                f"截图流程组 [{group_name}] 已全部完成" + (f"（共 {times} 轮）" if times > 1 else ""))
+            grand_total = times * total_tasks
+            self.app.after(0, lambda: self.app.update_progress(100, f"{grand_total}/{grand_total} 步"))
+            self.app.after(0, lambda: self.app.update_screenshot_mode_status("全部任务已完成"))
+        else:
+            reason = getattr(self, "stop_reason", "")
+            if reason:
+                self.stop_reason = ""
+                self.app.after(0, lambda r=reason: self.app.update_screenshot_mode_status(r))
+            else:
+                self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
+
+    def _run_tasks_once(self, group_name):
+        """从当前组第一个任务跑到最后一个；返回 True=正常跑完一轮，False=中途停止。"""
         while self.running:
             with self.lock:
                 if self.current_index >= len(self.tasks):
-                    self.running = False
-                    break
+                    return True
                 task = json.loads(json.dumps(self.tasks[self.current_index], ensure_ascii=False))
                 task_number = self.current_index + 1
                 total = len(self.tasks)
-            
+
             if task.get("type", "normal") == "branch":
                 success = self._execute_branch(task, task_number, total)
             else:
                 success = self._execute_normal(task, task_number, total)
-            
+
             if not self.running:
-                break
+                return False
             if success:
                 with self.lock:
                     self.current_index += 1
@@ -1202,19 +1258,7 @@ class ScreenshotClickEngine:
                 self._interruptible_wait(0.3)
             else:
                 time.sleep(0.2)
-        
-        if self.current_index >= len(self.tasks) and self.tasks:
-            self.app.log_message(f"截图流程组 [{group_name}] 已全部完成")
-            self.app.after(0, lambda: self.app.update_progress(
-                100, f"{len(self.tasks)}/{len(self.tasks)} 步"))
-            self.app.after(0, lambda: self.app.update_screenshot_mode_status("全部任务已完成"))
-        elif not self.running:
-            reason = getattr(self, "stop_reason", "")
-            if reason:
-                self.stop_reason = ""
-                self.app.after(0, lambda r=reason: self.app.update_screenshot_mode_status(r))
-            else:
-                self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
+        return False
     
     def run_single_task(self, group_name, task_index):
         """
@@ -1343,6 +1387,28 @@ class ScreenshotClickEngine:
         if wait_seconds and not self._interruptible_wait(wait_seconds):
             return False
         action = task.get("action", "左键单击")
+        # 滚轮滚动：滚轮事件作用于鼠标所在位置，先移到屏幕中央再滚
+        if action in SCROLL_ACTIONS:
+            notches = max(1, int(task.get("scroll_notches", 5) or 5))
+            dy = -notches if action == "滚轮上滚" else notches
+            try:
+                controller = self.app.player.mouse_controller
+                dpi = getattr(self.app, "dpi_scale", 1.0) or 1.0
+                try:
+                    sw = self.app.winfo_screenwidth()
+                    sh = self.app.winfo_screenheight()
+                    controller.position = (int(sw / dpi / 2), int(sh / dpi / 2))
+                except Exception:
+                    pass
+                time.sleep(0.05)
+                controller.scroll(0, dy)
+            except Exception as e:
+                self.app.log_message(f"滚轮滚动失败：{str(e)}")
+                return False
+            self.app.log_message(
+                f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，"
+                f"滚轮{'上' if dy < 0 else '下'}滚 {notches} 格")
+            return True
         # 键盘类操作不移动鼠标，避免影响当前焦点位置
         if action in (KEY_ACTION, TEXT_ACTION):
             # 标记为软件自己发出的按键，避免触发“按键触发”监听
@@ -1542,12 +1608,14 @@ class ScreenshotClickEngine:
                         item.setdefault("key_combo", "")
                         item.setdefault("key_text", "")
                         item.setdefault("key_enter_after", False)
+                        item.setdefault("scroll_notches", 5)
                     elif item.get("type") == "branch":
                         for branch in item.get("branches", []):
                             branch.setdefault("action", "左键单击")
                             branch.setdefault("key_combo", "")
                             branch.setdefault("key_text", "")
                             branch.setdefault("key_enter_after", False)
+                            branch.setdefault("scroll_notches", 5)
         except Exception as e:
             self.groups = [{"name": "默认组", "tasks": []}]
             self.active_group_name = "默认组"
@@ -3484,6 +3552,15 @@ class AutomationApp(tk.Tk):
         )
         action_combo.pack(side=tk.LEFT, padx=5)
         ttk.Label(row1, text="（鼠标操作或键盘操作）", foreground="gray").pack(side=tk.LEFT)
+
+        row_scroll = ttk.Frame(settings)
+        row_scroll.pack(fill=tk.X, pady=4)
+        ttk.Label(row_scroll, text="滚动格数：", width=12).pack(side=tk.LEFT)
+        scroll_notches_var = tk.IntVar(value=int((task or {}).get("scroll_notches", 5) or 5))
+        ttk.Spinbox(row_scroll, from_=1, to=50, textvariable=scroll_notches_var,
+                    width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row_scroll, text="格（仅“滚轮上滚/下滚”时使用，1 格 ≈ 3 行文字，配合分支超时可做“滚动翻页”）",
+                  foreground="gray").pack(side=tk.LEFT)
         
         row2 = ttk.Frame(settings)
         row2.pack(fill=tk.X, pady=4)
@@ -3584,7 +3661,8 @@ class AutomationApp(tk.Tk):
                         repeat_count=repeat_count,
                         key_combo=key_combo,
                         key_text=key_text,
-                        key_enter_after=bool(key_enter_var.get())
+                        key_enter_after=bool(key_enter_var.get()),
+                        scroll_notches=int(scroll_notches_var.get())
                     )
                     self.log_message(f"已添加截图任务：{os.path.basename(file_path)} / {action}")
                 else:
@@ -3600,7 +3678,8 @@ class AutomationApp(tk.Tk):
                         repeat_count=repeat_count,
                         key_combo=key_combo,
                         key_text=key_text,
-                        key_enter_after=bool(key_enter_var.get())
+                        key_enter_after=bool(key_enter_var.get()),
+                        scroll_notches=int(scroll_notches_var.get())
                     )
                     self.log_message(f"已更新截图任务：{task.get('display_name', os.path.basename(file_path))}")
                 self.refresh_screenshot_task_list()
@@ -3820,14 +3899,20 @@ class AutomationApp(tk.Tk):
         ttk.Label(right_frame, text="分支等待超时(秒)：").grid(row=6, column=0, sticky='e', pady=5)
         ttk.Spinbox(right_frame, from_=0, to=86400, increment=0.5,
                     textvariable=global_timeout, width=12).grid(row=6, column=1, sticky='w')
-        
+
+        global_scroll_notches = tk.IntVar(value=5)
+        ttk.Label(right_frame, text="滚动格数：").grid(row=7, column=0, sticky='e', pady=5)
+        ttk.Spinbox(right_frame, from_=1, to=50, textvariable=global_scroll_notches,
+                    width=12).grid(row=7, column=1, sticky='w')
+
         ttk.Label(right_frame,
-                  text="操作选择“键盘按键”时回放按键组合；选择“输入文本”时输入上面的文字。\n"
+                  text="操作选择“键盘按键”时回放按键组合；选择“输入文本”时输入上面的文字；\n"
+                       "“滚轮上滚/下滚”按上面的格数滚动（滚轮事件作用于鼠标所在位置，会先移到屏幕中央）。\n"
                        "0 = 无限等待直到某个分支出现；\n大于0 = 超时后自动跳过该分支节点，继续主线下一个任务。",
-                  foreground="gray", justify=tk.LEFT).grid(row=7, column=0, columnspan=2, pady=8, sticky='w')
-        
+                  foreground="gray", justify=tk.LEFT).grid(row=8, column=0, columnspan=2, pady=8, sticky='w')
+
         ttk.Label(right_frame, text="提示：双击列表项可编辑该分支的锚点与偏移",
-                  foreground="gray").grid(row=8, column=0, columnspan=2, pady=8)
+                  foreground="gray").grid(row=9, column=0, columnspan=2, pady=8)
         
         listbox.bind("<Double-Button-1>", lambda e: edit_branch_item())
         
@@ -3855,7 +3940,8 @@ class AutomationApp(tk.Tk):
                     branch_timeout=global_timeout.get(),
                     key_combo=key_combo,
                     key_text=key_text,
-                    key_enter_after=bool(global_key_enter.get())
+                    key_enter_after=bool(global_key_enter.get()),
+                    scroll_notches=int(global_scroll_notches.get())
                 )
                 self.refresh_screenshot_task_list()
                 timeout_text = f"{global_timeout.get():.1f}s" if global_timeout.get() > 0 else "无限等待"
@@ -4054,6 +4140,8 @@ class AutomationApp(tk.Tk):
             preview = text if len(text) <= 12 else text[:12] + "…"
             suffix = "+回车" if task.get("key_enter_after") else ""
             return f"文本[{preview}]{suffix}"
+        if action in SCROLL_ACTIONS:
+            return f"{action}×{task.get('scroll_notches', 5)}格"
         return action
     
     def edit_selected_screenshot_task(self, event=None):
@@ -4106,7 +4194,16 @@ class AutomationApp(tk.Tk):
             self.log_message("已清空截图任务")
     
     def start_screenshot_click_mode(self):
-        self.screenshot_engine.start()
+        try:
+            times = max(1, min(9999, int(self.screenshot_loop_var.get())))
+        except Exception:
+            times = 1
+        self.app_settings["screenshot_loop_times"] = times
+        try:
+            save_app_settings(self.app_settings)
+        except Exception:
+            pass
+        self.screenshot_engine.start(times=times)
     
     def stop_screenshot_click_mode(self):
         self.screenshot_engine.stop()
@@ -4931,6 +5028,12 @@ class AutomationApp(tk.Tk):
                    command=self.start_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
         ttk.Button(shot_run, text="■ 停止识别", style='Warning.TButton',
                    command=self.stop_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
+        ttk.Label(shot_run, text="整组循环：").pack(side=tk.LEFT, padx=(12, 0))
+        self.screenshot_loop_var = tk.IntVar(
+            value=int(self.app_settings.get("screenshot_loop_times", 1) or 1))
+        ttk.Spinbox(shot_run, from_=1, to=9999, width=6,
+                    textvariable=self.screenshot_loop_var).pack(side=tk.LEFT)
+        ttk.Label(shot_run, text="次（如：循环 20 次 = 每轮点 1 个赞/滚 1 次）").pack(side=tk.LEFT)
         ttk.Button(shot_run, text="入队单个任务",
                    command=self.add_single_screenshot_task_to_queue).pack(side=tk.RIGHT, padx=2)
         
