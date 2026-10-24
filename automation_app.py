@@ -970,7 +970,7 @@ class ScreenshotClickEngine:
     def add_task(self, image_path, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                  threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
                  key_combo="", key_text="", key_enter_after=False, scroll_notches=5,
-                 stop_after_hits=0, adaptive_scroll=False):
+                 stop_after_hits=0, adaptive_scroll=False, verify_click=False):
         target, display_name = self._copy_image(image_path)
         with self.lock:
             self.tasks.append({
@@ -986,7 +986,8 @@ class ScreenshotClickEngine:
                 "key_enter_after": bool(key_enter_after),
                 "scroll_notches": max(1, int(scroll_notches)),
                 "stop_after_hits": max(0, int(stop_after_hits)),
-                "adaptive_scroll": bool(adaptive_scroll)
+                "adaptive_scroll": bool(adaptive_scroll),
+                "verify_click": bool(verify_click)
             })
             self.save_tasks()
 
@@ -1016,7 +1017,8 @@ class ScreenshotClickEngine:
     def _build_branch_node(self, branches_details, threshold=0.75, action="左键单击",
                            wait_seconds=0.0, branch_timeout=0.0,
                            key_combo="", key_text="", key_enter_after=False,
-                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False,
+                           verify_click=False):
         """
         构建一个条件分支节点（不加入任务列表）。
         已经在截图图片目录里的图片会被原样复用（编辑分支时不重复拷贝）。
@@ -1058,14 +1060,16 @@ class ScreenshotClickEngine:
                     "key_text":     str(detail.get('key_text', key_text) or ""),
                     "key_enter_after": bool(detail.get('key_enter_after', key_enter_after)),
                     "scroll_notches": max(1, int(detail.get('scroll_notches', scroll_notches))),
-                    "stop_after_hits": max(0, int(detail.get('stop_after_hits', stop_after_hits)))
+                    "stop_after_hits": max(0, int(detail.get('stop_after_hits', stop_after_hits))),
+                    "verify_click": bool(verify_click)
                 })
             return {
                 "type":           "branch",
                 "display_name":   "条件分支",
                 "branches":       branches,
                 "branch_timeout": max(0.0, float(branch_timeout)),
-                "repeat_until_miss": bool(repeat_until_miss)
+                "repeat_until_miss": bool(repeat_until_miss),
+                "verify_click": bool(verify_click)
             }
         except Exception:
             for branch in branches:
@@ -1075,7 +1079,7 @@ class ScreenshotClickEngine:
     def add_branch_task_detailed(self, branches_details, threshold=0.75, action="左键单击",
                                  wait_seconds=0.0, branch_timeout=0.0,
                                  key_combo="", key_text="", key_enter_after=False,
-                                 scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+                                 scroll_notches=5, stop_after_hits=0, repeat_until_miss=False, verify_click=False):
         """
         添加条件分支任务（详细版）
         branches_details: list of dict, each dict must contain:
@@ -1091,7 +1095,8 @@ class ScreenshotClickEngine:
             branches_details, threshold=threshold, action=action, wait_seconds=wait_seconds,
             branch_timeout=branch_timeout, key_combo=key_combo, key_text=key_text,
             key_enter_after=key_enter_after, scroll_notches=scroll_notches,
-            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss)
+            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss,
+            verify_click=verify_click)
         with self.lock:
             self.tasks.append(node)
             self.save_tasks()
@@ -1099,7 +1104,7 @@ class ScreenshotClickEngine:
     def update_branch_task(self, index, branches_details, threshold=0.75, action="左键单击",
                            wait_seconds=0.0, branch_timeout=0.0,
                            key_combo="", key_text="", key_enter_after=False,
-                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False):
+                           scroll_notches=5, stop_after_hits=0, repeat_until_miss=False, verify_click=False):
         """就地更新一个条件分支节点（保留任务位置）；不再使用的旧截图会被自动清理。"""
         with self.lock:
             if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "branch":
@@ -1109,7 +1114,8 @@ class ScreenshotClickEngine:
             branches_details, threshold=threshold, action=action, wait_seconds=wait_seconds,
             branch_timeout=branch_timeout, key_combo=key_combo, key_text=key_text,
             key_enter_after=key_enter_after, scroll_notches=scroll_notches,
-            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss)
+            stop_after_hits=stop_after_hits, repeat_until_miss=repeat_until_miss,
+            verify_click=verify_click)
         with self.lock:
             self.tasks[index] = node
             self.save_tasks()
@@ -1153,7 +1159,7 @@ class ScreenshotClickEngine:
     def update_task(self, index, anchor_x=None, anchor_y=None, offset_x=0, offset_y=0,
                     threshold=0.75, action="左键单击", wait_seconds=0.0, repeat_count=1,
                     key_combo="", key_text="", key_enter_after=False, scroll_notches=5,
-                    stop_after_hits=0, adaptive_scroll=False):
+                    stop_after_hits=0, adaptive_scroll=False, verify_click=False):
         with self.lock:
             if not (0 <= index < len(self.tasks)) or self.tasks[index].get("type", "normal") != "normal":
                 return False
@@ -1170,7 +1176,8 @@ class ScreenshotClickEngine:
                 "key_enter_after": bool(key_enter_after),
                 "scroll_notches": max(1, int(scroll_notches)),
                 "stop_after_hits": max(0, int(stop_after_hits)),
-                "adaptive_scroll": bool(adaptive_scroll)
+                "adaptive_scroll": bool(adaptive_scroll),
+                "verify_click": bool(verify_click)
             })
             self.save_tasks()
             return True
@@ -1222,6 +1229,7 @@ class ScreenshotClickEngine:
         self.current_index = 0
         self.hit_count = 0
         self._skip_streak = 0
+        self._last_click_ok = True
         self._report_progress()   # 进度条归零
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
@@ -1444,6 +1452,9 @@ class ScreenshotClickEngine:
         repeat_until_miss = bool(task.get("repeat_until_miss", False))
         start_time = time.time()
         node_hits = 0
+        self._last_click_ok = True
+        # 本次节点执行中“点了但没生效”的位置（可能被悬浮元素遮挡），匹配时直接跳过
+        invalid_points = []
 
         while self.running:
             # 防死机：分支即使设为无限等待，也不能真的无限等下去
@@ -1455,6 +1466,8 @@ class ScreenshotClickEngine:
             executed_once = False
             for branch in branches:
                 match = self._find_on_screen(branch)
+                if match and invalid_points and self._is_blocked_match(match, invalid_points):
+                    match = None  # 命中的是已确认点不动的位置（被遮挡），当作没看见
                 if not match:
                     continue
                 # 命中某一个分支，执行该分支的操作
@@ -1462,6 +1475,12 @@ class ScreenshotClickEngine:
                     return False
                 if not self.running:
                     return False  # 命中目标已达成或被手动停止
+                if repeat_until_miss and not getattr(self, "_last_click_ok", True):
+                    # 点击无效（被遮挡等）：标记位置不再重复点，重置等待时间让超时正常触发
+                    invalid_points.append((match[0], match[1], match[2], match[3]))
+                    start_time = time.time()
+                    repeat_round = True
+                    break
                 node_hits += 1
                 if repeat_until_miss:
                     # 连续点击间隔：默认至少 0.3 秒，避免连点太快；
@@ -1584,6 +1603,23 @@ class ScreenshotClickEngine:
         self._perform_mouse_action(action)
         self.app.log_message(
             f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，坐标 ({click_x}, {click_y})")
+        # 点击后校验：1 秒后复查，目标若仍在原位，说明点击没有生效
+        #（常见原因：目标被悬浮输入栏/弹窗等遮挡，点击落在了遮挡层上）
+        # 此时不计入命中次数，调用方也会把该位置标记为不可点击，避免空耗命中目标
+        if task.get("verify_click") and action in ("左键单击", "左键双击", "右键单击", "右键双击", "中键单击"):
+            if not self._interruptible_wait(1.0):
+                return False
+            again = self._find_on_screen(task)
+            same_spot = (again is not None
+                         and abs(again[0] - left_x) < max(again[2], width)
+                         and abs(again[1] - top_y) < max(again[3], height))
+            if same_spot:
+                self._last_click_ok = False
+                self.app.log_message(
+                    f"点击后校验：{task.get('display_name', '截图')} 1 秒后仍在原位，"
+                    f"本次点击可能被悬浮元素遮挡、未生效（不计入命中次数，该位置将被跳过）")
+                return True
+        self._last_click_ok = True
         self._after_success(task)
         return True
     
@@ -1682,6 +1718,14 @@ class ScreenshotClickEngine:
             "文本输入失败：系统拒绝了键盘输入（若目标程序以管理员身份运行，请同样以管理员权限启动本软件）")
         return False
     
+    def _is_blocked_match(self, match, invalid_points):
+        """判断匹配位置是否落在已确认“点击无效”的区域附近（模板同尺寸，位置接近即视为同一目标）。"""
+        mx, my, mw, mh = match[0], match[1], match[2], match[3]
+        for ix, iy, iw, ih in invalid_points:
+            if abs(mx - ix) < max(mw, iw) and abs(my - iy) < max(mh, ih):
+                return True
+        return False
+
     def _find_on_screen(self, task):
         try:
             image_path = task["image_path"]
@@ -1762,8 +1806,10 @@ class ScreenshotClickEngine:
                         item.setdefault("scroll_notches", 5)
                         item.setdefault("stop_after_hits", 0)
                         item.setdefault("adaptive_scroll", False)
+                        item.setdefault("verify_click", False)
                     elif item.get("type") == "branch":
                         item.setdefault("repeat_until_miss", False)
+                        item.setdefault("verify_click", False)
                         for branch in item.get("branches", []):
                             branch.setdefault("action", "左键单击")
                             branch.setdefault("key_combo", "")
@@ -1771,6 +1817,7 @@ class ScreenshotClickEngine:
                             branch.setdefault("key_enter_after", False)
                             branch.setdefault("scroll_notches", 5)
                             branch.setdefault("stop_after_hits", 0)
+                            branch.setdefault("verify_click", False)
         except Exception as e:
             self.groups = [{"name": "默认组", "tasks": []}]
             self.active_group_name = "默认组"
@@ -3777,7 +3824,16 @@ class AutomationApp(tk.Tk):
                     width=10).pack(side=tk.LEFT, padx=5)
         ttk.Label(row_hits, text="次后自动停止整个流程（0 = 不限制；适合点赞等“点够 N 个就停”的场景）",
                   foreground="gray").pack(side=tk.LEFT)
-        
+
+        row_verify = ttk.Frame(settings)
+        row_verify.pack(fill=tk.X, pady=4)
+        verify_click_var = tk.BooleanVar(value=bool((task or {}).get("verify_click", False)))
+        ttk.Checkbutton(row_verify, text="点击后校验（点击 1 秒后复查，目标未消失则本次不计次数、该位置不再重复点击）",
+                        variable=verify_click_var).pack(side=tk.LEFT)
+        ttk.Label(row_verify,
+                  text="适合目标可能被悬浮栏/弹窗遮挡的场景，防止空耗命中目标",
+                  foreground="gray").pack(side=tk.LEFT, padx=(8, 0))
+
         row2 = ttk.Frame(settings)
         row2.pack(fill=tk.X, pady=4)
         ttk.Label(row2, text="X 微调：", width=12).pack(side=tk.LEFT)
@@ -3880,7 +3936,8 @@ class AutomationApp(tk.Tk):
                         key_enter_after=bool(key_enter_var.get()),
                         scroll_notches=int(scroll_notches_var.get()),
                         stop_after_hits=int(stop_after_hits_var.get()),
-                        adaptive_scroll=bool(adaptive_scroll_var.get())
+                        adaptive_scroll=bool(adaptive_scroll_var.get()),
+                        verify_click=bool(verify_click_var.get())
                     )
                     self.log_message(f"已添加截图任务：{os.path.basename(file_path)} / {action}")
                 else:
@@ -3899,7 +3956,8 @@ class AutomationApp(tk.Tk):
                         key_enter_after=bool(key_enter_var.get()),
                         scroll_notches=int(scroll_notches_var.get()),
                         stop_after_hits=int(stop_after_hits_var.get()),
-                        adaptive_scroll=bool(adaptive_scroll_var.get())
+                        adaptive_scroll=bool(adaptive_scroll_var.get()),
+                        verify_click=bool(verify_click_var.get())
                     )
                     self.log_message(f"已更新截图任务：{task.get('display_name', os.path.basename(file_path))}")
                 self.refresh_screenshot_task_list()
@@ -4178,15 +4236,20 @@ class AutomationApp(tk.Tk):
                         variable=global_repeat_until_miss).grid(
             row=9, column=0, columnspan=3, sticky='w', pady=(0, 5))
 
+        global_verify_click = tk.BooleanVar(value=bool(existing.get("verify_click", False)) if existing else False)
+        ttk.Checkbutton(right_frame, text="点击后校验（点击 1 秒后复查，目标未消失则不计次数、该位置不再重复点击，防悬浮栏遮挡）",
+                        variable=global_verify_click).grid(
+            row=10, column=0, columnspan=3, sticky='w', pady=(0, 5))
+
         ttk.Label(right_frame,
                   text="操作选择“键盘按键”时回放按键组合；选择“输入文本”时输入上面的文字；\n"
                        "“滚轮上滚/下滚”按上面的格数滚动（滚轮事件作用于鼠标所在位置，会先移到屏幕中央）。\n"
                        "0 = 无限等待直到某个分支出现；\n大于0 = 超时后自动跳过该分支节点，继续主线下一个任务；\n"
                        "命中目标 = 该分支累计成功执行 N 次后，整个截图流程自动停止（配合“整组循环”填大值使用）。",
-                  foreground="gray", justify=tk.LEFT).grid(row=10, column=0, columnspan=2, pady=8, sticky='w')
+                  foreground="gray", justify=tk.LEFT).grid(row=11, column=0, columnspan=2, pady=8, sticky='w')
 
         ttk.Label(right_frame, text="提示：双击列表项可编辑该分支的锚点与偏移",
-                  foreground="gray").grid(row=11, column=0, columnspan=2, pady=8)
+                  foreground="gray").grid(row=12, column=0, columnspan=2, pady=8)
         
         listbox.bind("<Double-Button-1>", lambda e: edit_branch_item())
         
@@ -4219,7 +4282,8 @@ class AutomationApp(tk.Tk):
                         key_enter_after=bool(global_key_enter.get()),
                         scroll_notches=int(global_scroll_notches.get()),
                         stop_after_hits=int(global_stop_after_hits.get()),
-                        repeat_until_miss=bool(global_repeat_until_miss.get())
+                        repeat_until_miss=bool(global_repeat_until_miss.get()),
+                        verify_click=bool(global_verify_click.get())
                     )
                     self.refresh_screenshot_task_list()
                     self.log_message(
@@ -4237,7 +4301,8 @@ class AutomationApp(tk.Tk):
                     key_enter_after=bool(global_key_enter.get()),
                     scroll_notches=int(global_scroll_notches.get()),
                     stop_after_hits=int(global_stop_after_hits.get()),
-                    repeat_until_miss=bool(global_repeat_until_miss.get())
+                    repeat_until_miss=bool(global_repeat_until_miss.get()),
+                        verify_click=bool(global_verify_click.get())
                 )
                 self.refresh_screenshot_task_list()
                 timeout_text = f"{global_timeout.get():.1f}s" if global_timeout.get() > 0 else "无限等待"
@@ -4406,10 +4471,11 @@ class AutomationApp(tk.Tk):
                 hits = max((int(b.get("stop_after_hits", 0) or 0) for b in branches), default=0)
                 target_text = f"，🎯累计命中{hits}次后停止" if hits > 0 else ""
                 repeat_text = "，【连点】命中后连续执行" if task.get("repeat_until_miss") else ""
+                verify_text = "，【点击校验】" if task.get("verify_click") else ""
                 action_text = self._describe_action(branches[0] if branches else {})
                 self.screenshot_task_list.insert(
                     tk.END,
-                    f"{i + 1}. 【条件分支】命中任一即操作（{action_text}）并进入下一步：{names}（{timeout_text}{target_text}{repeat_text}）"
+                    f"{i + 1}. 【条件分支】命中任一即操作（{action_text}）并进入下一步：{names}（{timeout_text}{target_text}{repeat_text}{verify_text}）"
                 )
                 continue
             name = task.get("display_name") or os.path.basename(task["image_path"])
@@ -4426,10 +4492,11 @@ class AutomationApp(tk.Tk):
             hits = int(task.get("stop_after_hits", 0) or 0)
             target_text = f" | 🎯累计命中{hits}次后停止" if hits > 0 else ""
             adaptive_text = " | 未命中自动加滚" if task.get("adaptive_scroll") else ""
+            verify_text = " | 点击后校验" if task.get("verify_click") else ""
             self.screenshot_task_list.insert(
                 tk.END,
                 f"{i + 1}. {name} | {action_text}×{repeat_count}（每次重新识别） | 等待 {wait_seconds:g}s | "
-                f"基准 {point_text} → 最终 {final_text} | 阈值 {threshold:.2f}{target_text}{adaptive_text}"
+                f"基准 {point_text} → 最终 {final_text} | 阈值 {threshold:.2f}{target_text}{adaptive_text}{verify_text}"
             )
     
     def _describe_action(self, task):
