@@ -120,6 +120,7 @@
 
 
 
+
 <body>
 <div class="layout">
   <nav class="toc">
@@ -226,7 +227,8 @@
 <p>建议这样放：</p>
 <pre><code>D:\喵想奇记\
     喵想奇记.exe
-    scripts\          ← 程序第一次运行会自动建，你的录制脚本都存这里</code></pre>
+    scripts\          ← 程序第一次运行会自动建，你的录制脚本都存这里
+    screenshot_click\ ← 截图组数据（任务配置 + 截图文件），跟着文件夹走</code></pre>
 <blockquote class="callout">
 <p>⚠️ <strong>别把 exe 放在桌面或回收站旁边</strong>。程序会在自己所在目录建 <code>scripts</code>、<code>script_groups</code>、<code>mixed_groups</code>、<code>images</code> 四个文件夹，桌面放一堆文件夹会很乱。</p>
 </blockquote>
@@ -418,9 +420,9 @@
 <li>脚本：<code>软件目录\scripts\脚本名.json</code></li>
 <li>脚本组：<code>软件目录\script_groups\组名.json</code></li>
 <li>混合组：<code>软件目录\mixed_groups\组名.json</code></li>
-<li>截图任务的图片：<code>软件目录\images\</code></li>
+<li>截图组（任务 + 截图文件）：<code>软件目录\screenshot_click\tasks.json</code> + <code>软件目录\screenshot_click\images\</code></li>
 </ul>
-<p><strong>换电脑或备份，把这几个文件夹整个拷走即可。</strong></p>
+<p><strong>换电脑或备份，把整个软件文件夹拷走即可，脚本和截图组都会一起带走。</strong>（旧版本把截图数据存在 <code>%APPDATA%\MiaoXiangQiJi\</code>，新版本首次运行会自动迁移到软件文件夹，原数据保留作备份）</p>
 <hr />
 <h2 id="6">6. 脚本组：把几个脚本串成流水线</h2>
 <p>适用：一件正事需要"开系统 → 导出 → 清理 → 另存"好几个脚本连起来做。</p>
@@ -713,7 +715,7 @@
 <p><strong>Q：认图认错了，点了别的地方？</strong> A：阈值太低或截图特征太弱。把阈值提到 0.85，并截得更有辨识度（带图标、带独特文字的那块）。</p>
 <p><strong>Q：想中途取消？</strong> A：脚本执行按 <code>Ctrl+Alt+F12</code> 或「■ 停止」；认图流程点「■ 停止截图识别」。</p>
 <p><strong>Q：脚本删了能恢复吗？</strong> A：不能。脚本就是 <code>scripts\</code> 下的 json 文件，建议定期把整个软件目录压缩备份一份。</p>
-<p><strong>Q：能不能拷到别的电脑用？</strong> A：可以。拷整个软件文件夹（含 <code>scripts</code>、<code>script_groups</code>、<code>mixed_groups</code>、<code>images</code>）。但<strong>认图任务依赖截图所在的屏幕特征</strong>，换分辨率/缩放后要重新截图。</p>
+<p><strong>Q：能不能拷到别的电脑用？</strong> A：可以。把<strong>整个软件文件夹</strong>拷走即可——录制脚本、脚本组、混合组、<strong>截图组（任务和截图文件）</strong>都存在软件文件夹里，跟着一起走。注意两点：① <strong>认图任务依赖截图所在的屏幕特征</strong>，换分辨率/缩放后要重新截图；② 定时任务和全局设置存在 <code>%APPDATA%\MiaoXiangQiJi\</code>（不随文件夹走），需要的话把这个文件夹也拷到新电脑的相同位置。</p>
 <p><strong>Q：日志里颜色是什么意思？</strong> A：绿=成功完成、红=失败错误、橙=警告/超时/防死机停止、紫=定时任务与按键触发与截图流程、蓝=执行步骤、灰=时间戳。先用颜色扫一眼，再去读具体那几行。</p>
 <p><strong>Q：进度条一直不动 / 一下子跳到 100%？</strong> A：脚本回放是按"事件"推进的，一个事件可能就是一个鼠标移动，所以会平滑推进；截图流程按"步"推进，等图期间不动是正常的。当前版本已修正早期"进度瞬间满格"的问题，并会在右侧显示 <code>40% (120/300)</code> 这样的明细。若数字明显对不上，请把日志截图发我。</p>
 <p><strong>Q：自己打包时报错，提示 exe 被占用 / 无法覆盖？</strong> A：说明 <code>dist\喵想奇记.exe</code> 还在运行。仓库里的 <code>打包python为软件.bat</code> 已修好：会先自动结束正在运行的旧程序再打包，并在失败时列出常见原因。也可以手动结束「喵想奇记.exe」进程后重试。</p>
