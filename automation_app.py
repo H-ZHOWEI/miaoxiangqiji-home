@@ -836,14 +836,50 @@ class ScreenshotClickEngine:
         self.max_skip_streak = 10
         self._skip_streak = 0
         
-        if sys.platform == "win32":
-            base_dir = Path(os.environ.get("APPDATA", Path.home())) / "MiaoXiangQiJi"
+        # 截图数据保存在 exe（或脚本）旁边的 screenshot_click 文件夹，
+        # 这样把整个软件文件夹拷到别的电脑时，创建的截图组会一起带走
+        if getattr(sys, "frozen", False):
+            portable_base = Path(sys.executable).resolve().parent
         else:
-            base_dir = Path.home() / ".config" / "miaoxiang_qiji"
-        self.data_dir = base_dir / "screenshot_click"
+            portable_base = Path(__file__).resolve().parent
+        self.data_dir = portable_base / "screenshot_click"
         self.image_dir = self.data_dir / "images"
         self.save_file = self.data_dir / "tasks.json"
-        self.image_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.image_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # exe 所在目录不可写（如放在受保护目录）时，退回 %APPDATA%
+            if sys.platform == "win32":
+                base_dir = Path(os.environ.get("APPDATA", Path.home())) / "MiaoXiangQiJi"
+            else:
+                base_dir = Path.home() / ".config" / "miaoxiang_qiji"
+            self.data_dir = base_dir / "screenshot_click"
+            self.image_dir = self.data_dir / "images"
+            self.save_file = self.data_dir / "tasks.json"
+            self.image_dir.mkdir(parents=True, exist_ok=True)
+        # 一次性迁移：老版本把数据存在 %APPDATA%\MiaoXiangQiJi\screenshot_click，
+        # 若新位置还没有数据而老位置有，自动搬过来（APPDATA 原数据保留作备份）
+        try:
+            if sys.platform == "win32":
+                legacy_dir = Path(os.environ.get("APPDATA", Path.home())) / "MiaoXiangQiJi" / "screenshot_click"
+            else:
+                legacy_dir = Path.home() / ".config" / "miaoxiang_qiji" / "screenshot_click"
+            legacy_file = legacy_dir / "tasks.json"
+            if legacy_file.exists() and not self.save_file.exists():
+                shutil.copy2(legacy_file, self.save_file)
+                legacy_images = legacy_dir / "images"
+                if legacy_images.exists():
+                    for f in legacy_images.iterdir():
+                        if f.is_file():
+                            shutil.copy2(f, self.image_dir / f.name)
+                try:
+                    self.app.log_message(
+                        f"已自动迁移截图组数据到 {self.data_dir}（原 %APPDATA% 数据保留）")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self.load_tasks()
     
     @property
@@ -1763,7 +1799,26 @@ class ScreenshotClickEngine:
     
     def save_tasks(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        data = {"version": 2, "active_group": self.active_group_name, "groups": self.groups}
+
+        def norm_tasks(tasks):
+            out = []
+            for item in tasks:
+                item = dict(item)
+                if item.get("image_path"):
+                    item["image_path"] = self._portable_image_name(item["image_path"])
+                if item.get("type") == "branch":
+                    branches = []
+                    for b in item.get("branches", []):
+                        b = dict(b)
+                        if b.get("image_path"):
+                            b["image_path"] = self._portable_image_name(b["image_path"])
+                        branches.append(b)
+                    item["branches"] = branches
+                out.append(item)
+            return out
+
+        groups = [dict(g, tasks=norm_tasks(g.get("tasks", []))) for g in self.groups]
+        data = {"version": 2, "active_group": self.active_group_name, "groups": groups}
         with open(self.save_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     
@@ -1818,10 +1873,56 @@ class ScreenshotClickEngine:
                             branch.setdefault("scroll_notches", 5)
                             branch.setdefault("stop_after_hits", 0)
                             branch.setdefault("verify_click", False)
+                # 截图路径自适应：兼容相对文件名，以及换了电脑后失效的旧绝对路径——
+                # 按文件名在当前数据目录 / 软件文件夹里找同名文件，找到就改写为可用路径
+                for group in self.groups:
+                    for item in group["tasks"]:
+                        if item.get("image_path"):
+                            item["image_path"] = self._resolve_image_path(item["image_path"])
+                        if item.get("type") == "branch":
+                            for branch in item.get("branches", []):
+                                if branch.get("image_path"):
+                                    branch["image_path"] = self._resolve_image_path(branch["image_path"])
         except Exception as e:
             self.groups = [{"name": "默认组", "tasks": []}]
             self.active_group_name = "默认组"
             self.app.log_message(f"加载截图流程失败：{str(e)}")
+
+    def _portable_base(self):
+        """软件文件夹：打包后为 exe 所在目录，开发运行为脚本所在目录。"""
+        try:
+            if getattr(sys, "frozen", False):
+                return Path(sys.executable).resolve().parent
+            return Path(__file__).resolve().parent
+        except Exception:
+            return self.data_dir.parent
+
+    def _resolve_image_path(self, path_str):
+        """把任务里存的截图路径解析为实际存在的文件：
+        ① 路径有效 → 原样使用；② 失效的绝对路径/相对文件名 → 按文件名依次在
+        screenshot_click\\images、软件文件夹根目录找同名文件；③ 都没有 → 原样返回（由调用方报不存在）。"""
+        if not path_str:
+            return path_str
+        try:
+            p = Path(path_str)
+            if p.exists():
+                return str(p)
+            for cand in (self.image_dir / p.name, self._portable_base() / p.name):
+                if cand.exists():
+                    return str(cand)
+        except Exception:
+            pass
+        return path_str
+
+    def _portable_image_name(self, path_str):
+        """保存时把数据目录内的截图路径写成相对文件名（整个文件夹拷走后仍可用）。"""
+        try:
+            p = Path(path_str)
+            if p.exists() and self.image_dir in p.parents:
+                return p.name
+        except Exception:
+            pass
+        return path_str
     
     def _delete_unused_image(self, image_path):
         if not image_path:
