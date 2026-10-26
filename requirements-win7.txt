@@ -1,8 +1,10 @@
 # Win7-compatible pinned deps for Python 3.8.10 (do NOT install with newer Python)
 # pyinstaller 4.10 = last series that supports Win7
-# opencv 4.8.1.78 / numpy 1.24.4 / Pillow 10.4.0 = last versions working on py3.8
+# NOTE: opencv-python(-headless) must be 4.5.5.64 -- version 4.8+ breaks under
+# pyinstaller 4.x with "recursion is detected during loading of cv2" at runtime.
+# numpy 1.23.5 = last py3.8 version that still has np.float/np.int used by cv2 4.5.x
 pynput==1.7.7
-opencv-python==4.8.1.78
-numpy==1.24.4
+opencv-python-headless==4.5.5.64
+numpy==1.23.5
 Pillow==10.4.0
 pyinstaller==4.10
