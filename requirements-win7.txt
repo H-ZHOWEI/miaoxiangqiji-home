@@ -1,0 +1,11 @@
+# Win7 兼容版依赖（Python 3.8.10 专用，请勿用新版 Python 安装）
+# 各版本说明：
+#   pyinstaller 4.10    —— 最后一个支持 Win7 的 PyInstaller 系列
+#   opencv-python 4.8.1.78 / numpy 1.24.4 —— 3.8 可用的稳定组合
+#   Pillow 10.4.0      —— 3.8 可用的最后版本
+#   pynput 1.7.7       —— 纯 Python，无平台限制
+pynput==1.7.7
+opencv-python==4.8.1.78
+numpy==1.24.4
+Pillow==10.4.0
+pyinstaller==4.10

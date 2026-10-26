@@ -37,6 +37,8 @@ automation_app.py      主程序（单文件，约 29 万字符）
 scripts/               脚本目录（放你自己录制的 .json 脚本，仓库内为空）
 喵想奇记.spec           PyInstaller 打包配置（datas 留空，不把个人脚本打进 exe）
 打包python为软件.bat    一键打包脚本（自动关旧进程 → 查依赖 → 打包 → 失败提示）
+打包python为软件-win7.bat  Win7 兼容版打包脚本（需先装 Python 3.8.10）
+requirements-win7.txt  Win7 兼容版的固定旧版依赖清单
 app_icon.ico           程序图标
 update_log.txt         更新日志
 操作说明.md / .html     使用手册（Markdown 版 / 排版版）
@@ -76,6 +78,15 @@ pyinstaller 喵想奇记.spec --noconfirm
 ```
 
 产物在 `dist/喵想奇记.exe`（spec 里 `datas` 为空，不会捆绑任何脚本数据）。
+
+### 打 Win7 兼容包（可选）
+
+`喵想奇记.exe` 用新版 Python 打包，**不支持 Windows 7**（在 Win7 上会提示缺少 `api-ms-win-core-path-l1-1-0.dll`，属系统限制无法绕过）。如需在 Win7 上运行：
+
+1. 安装 [Python 3.8.10](https://www.python.org/ftp/python/3.8.10/python-3.8.10-amd64.exe)（官方最后一个支持 Win7 的版本；装 32 位版可在 32/64 位 Win7 上都运行，可与新版 Python 共存，安装时勾选 "Add Python 3.8 to PATH"）
+2. 双击 **`打包python为软件-win7.bat`**，它会用 3.8 + 固定旧版依赖（`requirements-win7.txt`）打出 `dist/喵想奇记-win7.exe`
+
+日常给 Win10/11 用的包仍用 `打包python为软件.bat`，两者互不影响。
 
 ## 更新日志
 
