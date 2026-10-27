@@ -898,6 +898,28 @@ class ScreenshotClickEngine:
     
     def list_groups(self):
         return [g.get("name", "未命名组") for g in self.groups]
+
+    def get_active_group_loop(self):
+        """当前截图组自己的整组循环次数（1~9999，缺省 1）。"""
+        group = self.get_active_group()
+        try:
+            return max(1, min(9999, int((group or {}).get("loop_times", 1) or 1)))
+        except Exception:
+            return 1
+
+    def set_active_group_loop(self, times):
+        """把整组循环次数保存到当前截图组（每组独立，随组数据持久化）。"""
+        group = self.get_active_group()
+        if group is None:
+            return False
+        try:
+            times = max(1, min(9999, int(times)))
+        except Exception:
+            times = 1
+        with self.lock:
+            group["loop_times"] = times
+            self.save_tasks()
+        return True
     
     def set_active_group(self, name):
         with self.lock:
@@ -946,7 +968,11 @@ class ScreenshotClickEngine:
         if any(g.get("name") == new_name for g in self.groups):
             raise ValueError("该组名已经存在")
         copied_tasks = json.loads(json.dumps(source.get("tasks", []), ensure_ascii=False))
-        self.groups.append({"name": new_name, "tasks": copied_tasks})
+        copied = {"name": new_name, "tasks": copied_tasks}
+        # 复制组时把原组的整组循环次数也一起带上
+        if "loop_times" in source:
+            copied["loop_times"] = source.get("loop_times", 1)
+        self.groups.append(copied)
         self.active_group_name = new_name
         self.save_tasks()
     
@@ -1255,11 +1281,13 @@ class ScreenshotClickEngine:
         if not self.tasks:
             self.app.log_message("当前截图组没有任务")
             return
-        if times is not None:
-            try:
-                self.run_times = max(1, min(9999, int(times)))
-            except Exception:
-                self.run_times = 1
+        if times is None:
+            # 整组循环次数现在跟随每个截图组各自保存（loop_times），不再全局共用
+            times = self.get_active_group_loop()
+        try:
+            self.run_times = max(1, min(9999, int(times)))
+        except Exception:
+            self.run_times = 1
         self.running = True
         self.stop_reason = ""
         self.current_index = 0
@@ -1844,6 +1872,11 @@ class ScreenshotClickEngine:
             for group in self.groups:
                 group.setdefault("name", "未命名组")
                 group.setdefault("tasks", [])
+                # 每个截图组自己的整组循环次数（老数据没有则默认 1 次）
+                try:
+                    group["loop_times"] = max(1, min(9999, int(group.get("loop_times", 1) or 1)))
+                except Exception:
+                    group["loop_times"] = 1
                 for item in group["tasks"]:
                     item.setdefault("type", "normal")
                     if item.get("type") == "normal":
@@ -4080,7 +4113,12 @@ class AutomationApp(tk.Tk):
     
     def on_screenshot_group_changed(self, event=None):
         name = self.screenshot_group_var.get().strip()
+        # 切换前先把界面上的循环次数存回原来选中的组
+        self._save_current_group_loop()
         if self.screenshot_engine.set_active_group(name):
+            # 切换后显示新组自己的循环次数
+            if hasattr(self, "screenshot_loop_var"):
+                self.screenshot_loop_var.set(self.screenshot_engine.get_active_group_loop())
             self.refresh_screenshot_task_list()
             self.update_screenshot_mode_status(f"当前组：{name}")
     
@@ -4664,17 +4702,19 @@ class AutomationApp(tk.Tk):
             self.refresh_screenshot_task_list()
             self.log_message("已清空截图任务")
     
-    def start_screenshot_click_mode(self):
+    def _save_current_group_loop(self):
+        """把界面上的循环次数保存到当前选中的截图组（每组独立，不互相影响）。"""
+        if not hasattr(self, "screenshot_loop_var"):
+            return
         try:
-            times = max(1, min(9999, int(self.screenshot_loop_var.get())))
+            times = int(self.screenshot_loop_var.get())
         except Exception:
             times = 1
-        self.app_settings["screenshot_loop_times"] = times
-        try:
-            save_app_settings(self.app_settings)
-        except Exception:
-            pass
-        self.screenshot_engine.start(times=times)
+        self.screenshot_engine.set_active_group_loop(times)
+
+    def start_screenshot_click_mode(self):
+        self._save_current_group_loop()
+        self.screenshot_engine.start()
     
     def stop_screenshot_click_mode(self):
         self.screenshot_engine.stop()
@@ -5502,12 +5542,16 @@ class AutomationApp(tk.Tk):
                    command=self.start_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
         ttk.Button(shot_run, text="■ 停止识别", style='Warning.TButton',
                    command=self.stop_screenshot_click_mode).pack(side=tk.LEFT, padx=2)
-        ttk.Label(shot_run, text="整组循环：").pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(shot_run, text="本组循环：").pack(side=tk.LEFT, padx=(12, 0))
         self.screenshot_loop_var = tk.IntVar(
-            value=int(self.app_settings.get("screenshot_loop_times", 1) or 1))
-        ttk.Spinbox(shot_run, from_=1, to=9999, width=6,
-                    textvariable=self.screenshot_loop_var).pack(side=tk.LEFT)
-        ttk.Label(shot_run, text="次（如：循环 20 次 = 每轮点 1 个赞/滚 1 次）").pack(side=tk.LEFT)
+            value=self.screenshot_engine.get_active_group_loop())
+        loop_spin = ttk.Spinbox(shot_run, from_=1, to=9999, width=6,
+                                textvariable=self.screenshot_loop_var,
+                                command=self._save_current_group_loop)
+        loop_spin.pack(side=tk.LEFT)
+        loop_spin.bind("<Return>", lambda e: self._save_current_group_loop())
+        loop_spin.bind("<FocusOut>", lambda e: self._save_current_group_loop())
+        ttk.Label(shot_run, text="次（只对当前选中的截图组生效，每组独立保存）").pack(side=tk.LEFT)
         ttk.Button(shot_run, text="入队单个任务",
                    command=self.add_single_screenshot_task_to_queue).pack(side=tk.RIGHT, padx=2)
         
