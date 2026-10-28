@@ -1342,8 +1342,13 @@ class ScreenshotClickEngine:
         return True
     
     def _after_success(self, task):
-        """任务成功执行后的统一处理：重置连续跳过计数，并按需累计命中数（达到目标自动停止）。"""
-        self._skip_streak = 0
+        """任务成功执行后的统一处理：重置连续跳过计数，并按需累计命中数（达到目标自动停止）。
+
+        注意：勾选了「未命中时自动加滚」的滚动任务不清零 _skip_streak——
+        它自己成功不代表找到了目标，加滚计数只能由"分支节点真正命中目标"来清零，
+        否则每轮滚动后计数归零，加滚永远不会生效。"""
+        if not task.get("adaptive_scroll"):
+            self._skip_streak = 0
         try:
             target = max(0, int(task.get("stop_after_hits", 0) or 0))
         except Exception:
@@ -1565,8 +1570,12 @@ class ScreenshotClickEngine:
                 break
 
             if repeat_round:
+                # 分支命中目标：连续未命中计数清零，滚动任务恢复基础格数
+                self._skip_streak = 0
                 continue
             if executed_once:
+                # 分支命中目标：连续未命中计数清零，滚动任务恢复基础格数
+                self._skip_streak = 0
                 return True
             
             # 检查是否超时
@@ -1615,9 +1624,9 @@ class ScreenshotClickEngine:
         if action in SCROLL_ACTIONS:
             notches = max(1, int(task.get("scroll_notches", 5) or 5))
             extra = 0
-            # 自适应加滚：连续 N 轮"滚完也没找到目标"时，每轮多滚 1 格；一旦命中即清零回到基础格数
+            # 自适应加滚：连续 N 轮"滚完也没找到目标"时，每轮多滚 1 格；一旦分支命中目标即清零回到基础格数
             if task.get("adaptive_scroll"):
-                extra = max(0, int(getattr(self, "_skip_streak", 0)) - 1)
+                extra = min(495, max(0, int(getattr(self, "_skip_streak", 0))))
                 notches = min(500, notches + extra)
             # pynput 滚轮：正数 = 向上滚（滚轮朝上/远离身体），负数 = 向下滚
             dy = notches if action == "滚轮上滚" else -notches
