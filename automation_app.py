@@ -127,6 +127,23 @@ def send_unicode_text(text, per_char_delay=0.008):
     return True
 
 
+def imread_unicode(image_path, flags=cv2.IMREAD_COLOR):
+    """读取图片，支持含中文/非 ASCII 字符的路径。
+
+    OpenCV 的 imread 在 Windows 上读不了中文路径（静默返回 None），
+    这里改用 numpy.fromfile + imdecode，保证软件文件夹叫任何名字
+    （如「喵想奇记」）或拷到别的电脑后，截图都能正常识别。"""
+    try:
+        data = np.fromfile(str(image_path), dtype=np.uint8)
+        if data.size:
+            img = cv2.imdecode(data, flags)
+            if img is not None:
+                return img
+    except Exception:
+        pass
+    return cv2.imread(str(image_path), flags)  # 兜底：非文件路径等场景
+
+
 class DPIScaler:
     def __init__(self):
         self.scale_factor = 1.0
@@ -321,7 +338,7 @@ class ImageMatcher:
     def set_target(self, image_path, threshold=0.5):
         with self.lock:
             self.current_target = {
-                'image':     cv2.imread(image_path, cv2.IMREAD_COLOR),
+                'image':     imread_unicode(image_path, cv2.IMREAD_COLOR),
                 'threshold': threshold,
                 'path':      image_path
             }
@@ -1806,7 +1823,7 @@ class ScreenshotClickEngine:
             if not os.path.exists(image_path):
                 self.app.log_message(f"截图文件不存在：{image_path}")
                 return None
-            template = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            template = imread_unicode(image_path, cv2.IMREAD_COLOR)
             if template is None:
                 return None
             screenshot = ImageGrab.grab(all_screens=True)
