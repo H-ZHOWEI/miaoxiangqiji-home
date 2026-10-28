@@ -2997,7 +2997,20 @@ class AutomationApp(tk.Tk):
         # 添加DPI缩放属性
         self.recording_scale = 1.0  # 录制时的缩放比例
         self.current_scale = self.dpi_scale  # 当前缩放比例
-        
+
+        # 界面字体缩放（适配不同设备）：相对系统默认的倍率，启动时应用，
+        # 顶栏「字体」下拉框可实时调整并保存
+        try:
+            font_scale = float(self.app_settings.get("font_scale", 1.0))
+        except Exception:
+            font_scale = 1.0
+        self.font_scale = max(0.7, min(2.0, font_scale))
+        try:
+            self._base_tk_scaling = float(self.tk.call('tk', 'scaling'))
+            self.tk.call('tk', 'scaling', self._base_tk_scaling * self.font_scale)
+        except Exception:
+            self._base_tk_scaling = 1.3333
+
         self.title("喵想奇记 - 版权所有 © 爱吃蟹黄先生")
         
         screen_w = self.winfo_screenwidth()
@@ -5270,6 +5283,30 @@ class AutomationApp(tk.Tk):
                 self.current_scale = new_scale
                 self.player.dpi_scale = new_scale  # 更新播放器的DPI缩放
     
+    def on_font_scale_changed(self, event=None):
+        """顶栏「字体」下拉框：实时调整界面字体大小并保存，重启后仍生效。"""
+        text = (self.font_scale_var.get() or "100%").replace("%", "").strip()
+        try:
+            scale = int(text) / 100.0
+        except Exception:
+            scale = 1.0
+        self.font_scale = max(0.7, min(2.0, scale))
+        try:
+            self.tk.call('tk', 'scaling', self._base_tk_scaling * self.font_scale)
+        except Exception:
+            pass
+        self.app_settings["font_scale"] = self.font_scale
+        try:
+            save_app_settings(self.app_settings)
+        except Exception:
+            pass
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        self.log_message(f"界面字体大小已调整为 {self.font_scale_var.get()}"
+                         f"（实时生效并已保存，下次启动沿用）")
+
     def on_search_focus_in(self, event):
         """当搜索框获得焦点时处理提示文字"""
         if self.search_entry.get() == "输入脚本名称搜索...":
@@ -5416,6 +5453,16 @@ class AutomationApp(tk.Tk):
                    command=self.open_group_manager_dialog).pack(side=tk.RIGHT, padx=2)
         ttk.Button(toolbar, text="截图高级设置",
                    command=self.open_screenshot_advanced_dialog).pack(side=tk.RIGHT, padx=2)
+        # 字体大小（界面缩放）：换设备不适配时可在这里调大调小，实时生效并记住
+        ttk.Label(toolbar, text="字体：").pack(side=tk.RIGHT, padx=(8, 0))
+        self.font_scale_var = tk.StringVar(
+            value=f"{int(round(self.font_scale * 100))}%")
+        self.font_scale_combo = ttk.Combobox(toolbar, width=5, state="readonly",
+                                             values=["70%", "80%", "90%", "100%",
+                                                     "110%", "125%", "150%", "175%", "200%"],
+                                             textvariable=self.font_scale_var)
+        self.font_scale_combo.pack(side=tk.RIGHT)
+        self.font_scale_combo.bind("<<ComboboxSelected>>", self.on_font_scale_changed)
         
         self.help_icon = ttk.Label(toolbar, text="?", cursor="hand2",
                                    font=('Arial', 12, 'bold'), foreground='#666666')
