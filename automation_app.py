@@ -19,7 +19,120 @@ from datetime import datetime, timedelta
 import calendar
 import os
 import shutil
+import subprocess
+import urllib.request
 from pathlib import Path
+
+# ==================== 版本与在线更新 ====================
+# 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
+# version / changelog ③ 重新打包 exe 并上传（含 latest.json）
+APP_VERSION = "1.1.0"
+# 版本信息源：依次尝试（raw 直连 → 国内加速镜像 → GitHub API），任一成功即用
+_RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
+                 "main/latest.json")
+UPDATE_INFO_URLS = (
+    _RAW_INFO_URL,
+    "https://gh-proxy.com/" + _RAW_INFO_URL,
+    "https://api.github.com/repos/H-ZHOWEI/miaoxiangqiji-home/contents/latest.json",
+)
+
+
+def _version_tuple(v):
+    """把 '1.2.3' 转成可比较的元组 (1, 2, 3)；非数字段按 0 处理。"""
+    try:
+        parts = str(v).strip().lstrip("vV").split(".")
+        return tuple(int(p) if p.strip().isdigit() else 0 for p in parts)
+    except Exception:
+        return (0,)
+
+
+def _is_win7_build():
+    """判断当前 exe 是否为 Win7 兼容版（按 exe 文件名判断）。"""
+    try:
+        if not getattr(sys, "frozen", False):
+            return False
+        return "win7" in Path(sys.executable).stem.lower()
+    except Exception:
+        return False
+
+
+def _app_portable_base():
+    """软件文件夹：打包后为 exe 所在目录，开发运行为脚本所在目录。"""
+    try:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent
+    except Exception:
+        return Path.cwd()
+
+
+def _pending_changelog_path(base=None):
+    return (base or _app_portable_base()) / "update_pending.json"
+
+
+def write_pending_changelog(version, text, base=None):
+    """更新替换 exe 前写入：新版本首次启动时据此弹窗展示『本次更新内容』。"""
+    try:
+        with open(_pending_changelog_path(base), "w", encoding="utf-8") as f:
+            json.dump({"version": str(version), "changelog": str(text or "")},
+                      f, ensure_ascii=False, indent=1)
+        return True
+    except Exception:
+        return False
+
+
+def read_pending_changelog(base=None):
+    try:
+        with open(_pending_changelog_path(base), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return str(d.get("version", "")), str(d.get("changelog", ""))
+    except Exception:
+        return None, None
+
+
+def clear_pending_changelog(base=None):
+    try:
+        _pending_changelog_path(base).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _fetch_latest_release_info(timeout=10):
+    """读取最新版本信息 latest.json：{version, changelog, exe_url,
+    exe_url_win7}。多个源依次尝试（国内网络 raw 直连常不可达，走加速镜像）。"""
+    last_err = None
+    for url in UPDATE_INFO_URLS:
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "MiaoXiangQiJi-Updater",
+                "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read().decode("utf-8")
+            info = json.loads(data)
+            # GitHub API 返回 base64 包裹的文件内容
+            if isinstance(info, dict) and info.get("encoding") == "base64":
+                import base64
+                info = json.loads(
+                    base64.b64decode(info.get("content", "")).decode("utf-8"))
+            if isinstance(info, dict) and info.get("version"):
+                return info
+        except Exception as e:
+            last_err = e
+    raise last_err or RuntimeError("无法获取版本信息")
+
+
+def _pick_exe_url(info):
+    """按当前 exe 版本（普通版/Win7 版）选择对应的下载地址。"""
+    url = info.get("exe_url_win7") if _is_win7_build() else None
+    return url or info.get("exe_url") or ""
+
+
+def _pick_exe_urls(info):
+    """下载地址候选列表：直连 → 国内加速镜像，逐个尝试。"""
+    url = _pick_exe_url(info)
+    if not url:
+        return []
+    return [url, "https://gh-proxy.com/" + url]
 
 
 def get_dpi_scaling():
@@ -3037,7 +3150,10 @@ class AutomationApp(tk.Tk):
         except Exception:
             self._base_tk_scaling = 1.3333
 
-        self.title("喵想奇记 - 版权所有 © 爱吃蟹黄先生")
+        self.title(f"喵想奇记 v{APP_VERSION} - 版权所有 © 爱吃蟹黄先生")
+
+        # 启动后稍等片刻：清理更新遗留 → 弹「本次更新内容」→ 后台检查新版本
+        self.after(2500, self._startup_update_housekeeping)
         
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
@@ -5309,6 +5425,288 @@ class AutomationApp(tk.Tk):
                 self.current_scale = new_scale
                 self.player.dpi_scale = new_scale  # 更新播放器的DPI缩放
     
+    # ==================== 在线更新 ====================
+    def _startup_update_housekeeping(self):
+        """启动收尾：① 清理上次自动更新遗留的旧程序 ② 若刚完成更新则展示
+        更新内容 ③ 后台检查新版本。"""
+        # 1) 清理更新时被改名的旧 exe（运行中无法删除，留给本次启动清理）
+        try:
+            exe = Path(sys.executable)
+            old = exe.with_name(exe.name + ".old")
+            if getattr(sys, "frozen", False) and old.exists():
+                old.unlink()
+        except Exception:
+            pass
+        # 2) 刚完成更新 → 展示本次更新内容
+        ver, text = read_pending_changelog()
+        if ver:
+            clear_pending_changelog()
+            if ver == APP_VERSION and text:
+                self.after(600, lambda: self._show_changelog_window(
+                    f"✅ 已更新到 v{ver}", text))
+        # 3) 自动检查新版本（静默，失败不打扰）
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual=False):
+        """检查更新：后台请求 GitHub 上的 latest.json，有新版弹更新框。
+        manual=True 时无论结果都给出提示。"""
+        if not getattr(sys, "frozen", False):
+            if manual:
+                messagebox.showinfo("检查更新", "开发模式下不支持自动更新。")
+            return
+
+        def worker():
+            info, err = None, None
+            try:
+                info = _fetch_latest_release_info()
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+
+            def apply():
+                if err is not None:
+                    if manual:
+                        messagebox.showwarning(
+                            "检查更新", f"检查更新失败，请检查网络后重试：\n{err}")
+                    return
+                remote = str(info.get("version", ""))
+                if _version_tuple(remote) > _version_tuple(APP_VERSION):
+                    self._show_update_dialog(info)
+                elif manual:
+                    messagebox.showinfo(
+                        "检查更新", f"当前已是最新版本 v{APP_VERSION}。")
+
+            try:
+                self.after(0, apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_dialog(self, info):
+        """发现新版本：展示版本号 + 更新内容，用户选『立即更新』或『以后再说』。"""
+        remote = str(info.get("version", "?"))
+        changelog = str(info.get("changelog", "") or "（暂无更新说明）")
+        if getattr(self, "_update_dialog", None) is not None and \
+                self._update_dialog.winfo_exists():
+            try:
+                self._update_dialog.lift()
+                self._update_dialog.focus_force()
+            except Exception:
+                pass
+            return
+        dlg = tk.Toplevel(self)
+        self._update_dialog = dlg
+        dlg.title("发现新版本")
+        dlg.resizable(True, True)
+        dlg.transient(self)
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=(
+            f"发现新版本 v{remote}（当前 v{APP_VERSION}），是否立即更新？"),
+            font=("Microsoft YaHei", 11, "bold")).pack(anchor=tk.W)
+        ttk.Label(frm, text="本次更新内容：").pack(anchor=tk.W, pady=(8, 2))
+        txt = tk.Text(frm, height=10, width=52, wrap="word", state=tk.NORMAL)
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.insert("1.0", changelog)
+        txt.config(state=tk.DISABLED)
+        btns = ttk.Frame(frm)
+        btns.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(btns, text="立即更新",
+                   command=lambda: self._start_update_download(info, dlg)
+                   ).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(btns, text="以后再说",
+                   command=dlg.destroy).pack(side=tk.RIGHT)
+        dlg.update_idletasks()
+        try:  # 居中显示
+            w, h = dlg.winfo_width(), dlg.winfo_height()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+            dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+    def _start_update_download(self, info, prompt_dlg=None):
+        """立即更新：下载新 exe（带进度），完成后替换自身并重启。"""
+        try:
+            if prompt_dlg is not None:
+                prompt_dlg.destroy()
+        except Exception:
+            pass
+        urls = _pick_exe_urls(info)
+        if not urls:
+            messagebox.showerror("更新失败", "新版本下载地址缺失，请到 GitHub "
+                                             "项目主页手动下载。")
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title("正在更新")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        frm = ttk.Frame(dlg, padding=14)
+        frm.pack(fill=tk.BOTH, expand=True)
+        status = ttk.Label(frm, text="正在连接服务器…")
+        status.pack(anchor=tk.W)
+        bar = ttk.Progressbar(frm, length=320, maximum=100, value=0)
+        bar.pack(fill=tk.X, pady=8)
+        cancel = Event()
+
+        def do_cancel():
+            cancel.set()
+            status.config(text="正在取消…")
+
+        ttk.Button(frm, text="取消", command=do_cancel).pack(anchor=tk.E)
+        dlg.update_idletasks()
+        try:
+            w, h = dlg.winfo_width(), dlg.winfo_height()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+            dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        def ui(fn):
+            try:
+                self.after(0, fn)
+            except Exception:
+                pass
+
+        def worker():
+            tmp = Path(sys.executable).with_name(
+                Path(sys.executable).name + ".update")
+            try:
+                last_err = None
+                for url in urls:  # 直连失败自动换加速镜像
+                    try:
+                        req = urllib.request.Request(
+                            url, headers={"User-Agent": "MiaoXiangQiJi-Updater"})
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            total = int(r.headers.get("Content-Length") or 0)
+                            done = 0
+                            with open(tmp, "wb") as f:
+                                while True:
+                                    if cancel.is_set():
+                                        raise InterruptedError("用户取消")
+                                    chunk = r.read(65536)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                    done += len(chunk)
+                                    if total:
+                                        pct = int(done * 100 / total)
+                                        mb = done / 1048576
+                                        tmb = total / 1048576
+                                        ui(lambda p=pct, m=mb, t=tmb: (
+                                            bar.config(value=p),
+                                            status.config(
+                                                text=f"正在下载更新包… {p}%"
+                                                     f"（{m:.1f}/{t:.1f} MB）")))
+                        if not cancel.is_set():
+                            break  # 下载成功
+                    except InterruptedError:
+                        raise
+                    except Exception as e:
+                        last_err = e
+                if cancel.is_set():
+                    raise InterruptedError("用户取消")
+                if last_err is not None:
+                    raise last_err
+            except InterruptedError:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+                ui(lambda: (dlg.destroy(),
+                            self.log_message("已取消更新。")))
+                return
+            except Exception as e:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+
+                def fail():
+                    dlg.destroy()
+                    messagebox.showerror(
+                        "更新失败", f"下载更新包失败：\n{e}\n\n"
+                        "请检查网络后重试，或到 GitHub 项目主页手动下载。")
+                ui(fail)
+                return
+            ui(lambda: self._finalize_update(info, tmp, dlg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finalize_update(self, info, tmp_path, dlg=None):
+        """下载完成：写更新内容标记 → 旧 exe 改名留档 → 新 exe 就位 → 重启。"""
+        ver = str(info.get("version", APP_VERSION))
+        changelog = str(info.get("changelog", "") or "")
+        try:
+            if dlg is not None:
+                dlg.destroy()
+        except Exception:
+            pass
+        exe = Path(sys.executable).resolve()
+        old = exe.with_name(exe.name + ".old")
+        try:
+            write_pending_changelog(ver, changelog)
+            if old.exists():
+                old.unlink()
+            os.rename(exe, old)          # 运行中的 exe 允许改名
+            shutil.move(str(tmp_path), str(exe))
+        except Exception as e:
+            clear_pending_changelog()
+            messagebox.showerror(
+                "更新失败", f"替换程序文件失败：\n{e}\n\n"
+                "请关闭杀毒软件后重试，或到 GitHub 项目主页手动下载覆盖。")
+            return
+        try:
+            subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True)
+        except Exception as e:
+            messagebox.showerror("更新失败", f"新版本已就位，但自动启动失败：\n{e}\n"
+                                             f"请手动运行：\n{exe}")
+            return
+        self.log_message(f"✅ 已更新到 v{ver}，正在重启…")
+        self.after(300, self._quit_for_update)
+
+    def _quit_for_update(self):
+        """更新重启前的退出：不做多余询问，直接结束当前进程。"""
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _show_changelog_window(self, title, text):
+        """更新完成后的『本次更新内容』弹窗。"""
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.resizable(True, True)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=title, font=("Microsoft YaHei", 11, "bold")
+                  ).pack(anchor=tk.W)
+        ttk.Label(frm, text="本次更新内容：").pack(anchor=tk.W, pady=(8, 2))
+        txt = tk.Text(frm, height=12, width=54, wrap="word")
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.insert("1.0", text)
+        txt.config(state=tk.DISABLED)
+        ttk.Button(frm, text="知道了", command=win.destroy).pack(
+            anchor=tk.E, pady=(10, 0))
+        win.update_idletasks()
+        try:
+            w, h = win.winfo_width(), win.winfo_height()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
     def on_font_scale_changed(self, event=None):
         """顶栏「字体」下拉框：实时调整界面字体大小并保存，重启后仍生效。"""
         text = (self.font_scale_var.get() or "100%").replace("%", "").strip()
@@ -5489,6 +5887,10 @@ class AutomationApp(tk.Tk):
                                              textvariable=self.font_scale_var)
         self.font_scale_combo.pack(side=tk.RIGHT)
         self.font_scale_combo.bind("<<ComboboxSelected>>", self.on_font_scale_changed)
+        # 在线更新：手动检查新版本入口（启动时也会自动检查）
+        ttk.Button(toolbar, text="检查更新",
+                   command=lambda: self.check_for_updates(manual=True)).pack(
+            side=tk.RIGHT, padx=(12, 2))
         
         self.help_icon = ttk.Label(toolbar, text="?", cursor="hand2",
                                    font=('Arial', 12, 'bold'), foreground='#666666')
