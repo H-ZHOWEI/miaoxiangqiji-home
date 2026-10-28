@@ -6,9 +6,10 @@ __pycache__/
 # PyInstaller 构建中间产物
 build/
 
-# dist 只保留主程序 喵想奇记.exe
+# dist 只保留主程序 exe（普通版 + Win7 版）
 dist/*
 !dist/喵想奇记.exe
+!dist/喵想奇记-win7.exe
 
 # 个人数据：录制的脚本、截图、运行时配置（一律不入库）
 scripts/*

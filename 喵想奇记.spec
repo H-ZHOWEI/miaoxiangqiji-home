@@ -5,7 +5,7 @@ a = Analysis(
     ['automation_app.py'],
     pathex=[],
     binaries=[],
-    datas=[],  # 不打包 scripts：脚本由用户放在 exe 同级目录，避免把个人录制内容编译进程序
+    datas=[('scripts', 'scripts')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
