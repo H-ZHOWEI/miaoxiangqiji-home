@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -65,6 +65,19 @@ def _app_portable_base():
         return Path(__file__).resolve().parent
     except Exception:
         return Path.cwd()
+
+
+def _clean_child_env_for_relaunch():
+    """重启新版 exe 前清理环境变量：PyInstaller 单文件程序会设置 _MEIPASS2/
+    _PYI_* 等变量，子进程继承后会误以为自己已在解压目录里、跳过解压，
+    父进程一退出临时目录被删，新进程就会报
+    「couldn't read file ...\\Temp\\_MEIxxxxx\\... no such file or directory」。
+    （v1.1.2 更新后自动重启闪退即此原因）"""
+    env = os.environ.copy()
+    for key in list(env.keys()):
+        if key.upper().startswith(("_MEI", "_PYI")):
+            env.pop(key, None)
+    return env
 
 
 def _pending_changelog_path(base=None):
@@ -5720,7 +5733,9 @@ class AutomationApp(tk.Tk):
                 "请关闭杀毒软件后重试，或到 GitHub 项目主页手动下载覆盖。")
             return
         try:
-            subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True)
+            child_env = _clean_child_env_for_relaunch()
+            subprocess.Popen([str(exe)], cwd=str(exe.parent), env=child_env,
+                             close_fds=True)
         except Exception as e:
             messagebox.showerror("更新失败", f"新版本已就位，但自动启动失败：\n{e}\n"
                                              f"请手动运行：\n{exe}")
