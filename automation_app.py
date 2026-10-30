@@ -1507,6 +1507,15 @@ class ScreenshotClickEngine:
             pass
 
     def _run_loop(self):
+        try:
+            self._run_loop_body()
+        finally:
+            # 无论正常跑完、命中目标停止还是超时停止，都要把运行标志复位。
+            # 此前"自然跑完"不会复位 running，导致定时任务一直误判
+            # "当前已有自动化任务在执行"而被跳过。
+            self.running = False
+
+    def _run_loop_body(self):
         group_name = self.active_group_name
         times = max(1, int(getattr(self, "run_times", 1)))
         total_tasks = len(self.tasks)
