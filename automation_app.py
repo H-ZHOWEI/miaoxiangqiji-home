@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 # 版本信息源：依次尝试（raw 直连 → 国内加速镜像 → GitHub API），任一成功即用
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
                  "main/latest.json")
