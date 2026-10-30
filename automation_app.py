@@ -26,13 +26,14 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.1"
-# 版本信息源：依次尝试（raw 直连 → 国内加速镜像 → GitHub API），任一成功即用
+APP_VERSION = "1.1.2"
+# 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
+# raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
                  "main/latest.json")
 UPDATE_INFO_URLS = (
-    _RAW_INFO_URL,
     "https://gh-proxy.com/" + _RAW_INFO_URL,
+    _RAW_INFO_URL,
     "https://api.github.com/repos/H-ZHOWEI/miaoxiangqiji-home/contents/latest.json",
 )
 
@@ -97,16 +98,42 @@ def clear_pending_changelog(base=None):
         pass
 
 
+_OPENER_DIRECT = None
+
+
+def _get_direct_opener():
+    """绕过系统代理的直连 opener（gh-proxy 等国内加速源直连远快于走 VPN）。"""
+    global _OPENER_DIRECT
+    if _OPENER_DIRECT is None:
+        _OPENER_DIRECT = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}))
+    return _OPENER_DIRECT
+
+
+def _open_url(url, timeout=15, headers=None):
+    """打开更新相关 URL：先绕过系统代理直连，失败再走系统代理。
+    （实测本机走 VPN 访问 gh-proxy 仅 0.26MB/s，直连可达 68MB/s）"""
+    hdrs = {"User-Agent": "MiaoXiangQiJi-Updater"}
+    if headers:
+        hdrs.update(headers)
+    last_err = None
+    for opener in (_get_direct_opener(), urllib.request.build_opener()):
+        try:
+            req = urllib.request.Request(url, headers=hdrs)
+            return opener.open(req, timeout=timeout)
+        except Exception as e:
+            last_err = e
+    raise last_err
+
+
 def _fetch_latest_release_info(timeout=10):
     """读取最新版本信息 latest.json：{version, changelog, exe_url,
     exe_url_win7}。多个源依次尝试（国内网络 raw 直连常不可达，走加速镜像）。"""
     last_err = None
     for url in UPDATE_INFO_URLS:
         try:
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "MiaoXiangQiJi-Updater",
-                "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with _open_url(url, timeout=timeout,
+                           headers={"Accept": "application/vnd.github+json"}) as r:
                 data = r.read().decode("utf-8")
             info = json.loads(data)
             # GitHub API 返回 base64 包裹的文件内容
@@ -128,11 +155,11 @@ def _pick_exe_url(info):
 
 
 def _pick_exe_urls(info):
-    """下载地址候选列表：直连 → 国内加速镜像，逐个尝试。"""
+    """下载地址候选列表：国内加速镜像优先（直连快）→ 直连 raw 兜底。"""
     url = _pick_exe_url(info)
     if not url:
         return []
-    return [url, "https://gh-proxy.com/" + url]
+    return ["https://gh-proxy.com/" + url, url]
 
 
 def get_dpi_scaling():
@@ -3161,8 +3188,9 @@ class AutomationApp(tk.Tk):
 
         self.title(f"喵想奇记 v{APP_VERSION} - 版权所有 © 爱吃蟹黄先生")
 
-        # 启动后稍等片刻：清理更新遗留 → 弹「本次更新内容」→ 后台检查新版本
-        self.after(2500, self._startup_update_housekeeping)
+        # 启动后尽快：清理更新遗留 → 弹「本次更新内容」→ 后台检查新版本
+        # （尽早检查，让更新提示赶在用户开始跑脚本之前出现）
+        self.after(1000, self._startup_update_housekeeping)
         
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
@@ -5479,7 +5507,7 @@ class AutomationApp(tk.Tk):
                     return
                 remote = str(info.get("version", ""))
                 if _version_tuple(remote) > _version_tuple(APP_VERSION):
-                    self._show_update_dialog(info)
+                    self._prompt_update_when_idle(info)
                 elif manual:
                     messagebox.showinfo(
                         "检查更新", f"当前已是最新版本 v{APP_VERSION}。")
@@ -5490,6 +5518,25 @@ class AutomationApp(tk.Tk):
                 pass
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_update_when_idle(self, info, announced=False):
+        """发现新版本但正有自动化任务在跑时，不打断用户，等任务结束后再弹窗。"""
+        try:
+            busy = bool(self.player.is_playing or self.screenshot_engine.running)
+        except Exception:
+            busy = False
+        if busy:
+            if not announced:
+                self.log_message(
+                    f"⏫ 发现新版本 v{info.get('version', '?')}，将在当前自动化任务"
+                    "结束后再提示更新（不影响当前任务）")
+            try:
+                self.after(5000, lambda: self._prompt_update_when_idle(
+                    info, announced=True))
+            except Exception:
+                pass
+            return
+        self._show_update_dialog(info)
 
     def _show_update_dialog(self, info):
         """发现新版本：展示版本号 + 更新内容，用户选『立即更新』或『以后再说』。"""
@@ -5593,9 +5640,7 @@ class AutomationApp(tk.Tk):
                 last_err = None
                 for url in urls:  # 直连失败自动换加速镜像
                     try:
-                        req = urllib.request.Request(
-                            url, headers={"User-Agent": "MiaoXiangQiJi-Updater"})
-                        with urllib.request.urlopen(req, timeout=30) as r:
+                        with _open_url(url, timeout=30) as r:
                             total = int(r.headers.get("Content-Length") or 0)
                             done = 0
                             with open(tmp, "wb") as f:
