@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -78,6 +78,77 @@ def _clean_child_env_for_relaunch():
         if key.upper().startswith(("_MEI", "_PYI")):
             env.pop(key, None)
     return env
+
+
+class _DownloadStalled(Exception):
+    """下载停滞信号：当前源长时间无进展，应换下一个源。"""
+
+
+def _download_file_adaptive(urls, dest, progress_cb=None, cancel=None,
+                            stall_seconds=15.0):
+    """多源自适应下载：
+    - 依次尝试候选源；用 Range 续传已下载部分，换源不丢进度
+    - 单源 stall_seconds 内无进展 → 视为停滞，自动换下一个源
+    - progress_cb(done_bytes, total_bytes, speed_bps) 汇报进度与实时速度
+    - 全部源失败 → 抛出最后一个异常
+    """
+    dest = Path(dest)
+    if cancel is None:
+        cancel = Event()
+    last_err = None
+    url_cycle = list(urls) * 3  # 全部源都停滞过一轮后还有机会再轮一遍
+    attempted = 0
+    for url in url_cycle:
+        if cancel.is_set():
+            raise InterruptedError("用户取消")
+        if attempted >= len(urls) * 2:
+            break  # 防止无限轮
+        attempted += 1
+        try:
+            done = dest.stat().st_size if dest.exists() else 0
+            headers = {"User-Agent": "MiaoXiangQiJi-Updater"}
+            if done:
+                headers["Range"] = f"bytes={done}-"
+            # 读超时收紧到停滞阈值附近：卡住的连接尽快失败换源，
+            # 而不是等满 30 秒 socket 超时
+            rt = max(8, min(30, stall_seconds + 2))
+            with _open_url(url, timeout=rt, headers=headers) as r:
+                status_code = getattr(r, "status", 200)
+                if done and status_code != 206:
+                    done = 0  # 服务器不支持续传，从头来
+                total = int(r.headers.get("Content-Length") or 0) + done
+                t_last = time.time()
+                got_last = done
+                speed = 0.0
+                with open(dest, "ab" if done else "wb") as f:
+                    while True:
+                        if cancel.is_set():
+                            raise InterruptedError("用户取消")
+                        if time.time() - t_last > stall_seconds:
+                            raise _DownloadStalled(url)  # 长时间无进展 → 换源
+                        chunk = r.read(262144)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        now = time.time()
+                        if now - t_last > 0.5:
+                            speed = (done - got_last) / (now - t_last)
+                            t_last, got_last = now, done
+                            if progress_cb:
+                                try:
+                                    progress_cb(done, total, speed)
+                                except Exception:
+                                    pass
+                if total and done < total:
+                    raise _DownloadStalled(url)
+                return dest  # 下载完成
+        except InterruptedError:
+            raise
+        except Exception as e:
+            last_err = e
+            time.sleep(0.3)
+    raise last_err or RuntimeError("所有下载源均失败")
 
 
 def _pending_changelog_path(base=None):
@@ -5649,41 +5720,25 @@ class AutomationApp(tk.Tk):
         def worker():
             tmp = Path(sys.executable).with_name(
                 Path(sys.executable).name + ".update")
+
+            def pcb(done, total, speed):
+                if total:
+                    pct = int(done * 100 / total)
+                    mb, tmb = done / 1048576, total / 1048576
+                    ui(lambda p=pct, m=mb, t=tmb, s=speed: (
+                        bar.config(value=p),
+                        status.config(text=(
+                            f"正在下载更新包… {p}%"
+                            f"（{m:.1f}/{t:.1f} MB，{s/1048576:.2f} MB/s）"))))
+                else:
+                    ui(lambda m=done, s=speed: status.config(text=(
+                        f"正在下载更新包… {m/1048576:.1f} MB"
+                        f"（{s/1048576:.2f} MB/s）")))
+
             try:
-                last_err = None
-                for url in urls:  # 直连失败自动换加速镜像
-                    try:
-                        with _open_url(url, timeout=30) as r:
-                            total = int(r.headers.get("Content-Length") or 0)
-                            done = 0
-                            with open(tmp, "wb") as f:
-                                while True:
-                                    if cancel.is_set():
-                                        raise InterruptedError("用户取消")
-                                    chunk = r.read(65536)
-                                    if not chunk:
-                                        break
-                                    f.write(chunk)
-                                    done += len(chunk)
-                                    if total:
-                                        pct = int(done * 100 / total)
-                                        mb = done / 1048576
-                                        tmb = total / 1048576
-                                        ui(lambda p=pct, m=mb, t=tmb: (
-                                            bar.config(value=p),
-                                            status.config(
-                                                text=f"正在下载更新包… {p}%"
-                                                     f"（{m:.1f}/{t:.1f} MB）")))
-                        if not cancel.is_set():
-                            break  # 下载成功
-                    except InterruptedError:
-                        raise
-                    except Exception as e:
-                        last_err = e
+                _download_file_adaptive(urls, tmp, pcb, cancel)
                 if cancel.is_set():
                     raise InterruptedError("用户取消")
-                if last_err is not None:
-                    raise last_err
             except InterruptedError:
                 try:
                     tmp.unlink()
