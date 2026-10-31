@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -78,6 +78,27 @@ def _clean_child_env_for_relaunch():
         if key.upper().startswith(("_MEI", "_PYI")):
             env.pop(key, None)
     return env
+
+
+_INSTANCE_MUTEX_NAME = "Local\\MiaoXiangQiJi_InstanceMutex"
+_instance_mutex_handle = None
+
+
+def _detect_other_instance():
+    """检测是否已有另一个本程序实例在运行（只用于记录提示，不阻止启动）。
+
+    软件被重复打开（例如更新后旧实例没退干净、或误双击两次）时，
+    两个进程各自跑一份定时任务，同一个任务就会被执行两遍。
+    """
+    global _instance_mutex_handle
+    if sys.platform != "win32":
+        return False
+    try:
+        k32 = ctypes.windll.kernel32
+        _instance_mutex_handle = k32.CreateMutexW(None, False, _INSTANCE_MUTEX_NAME)
+        return k32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+    except Exception:
+        return False
 
 
 class _DownloadStalled(Exception):
@@ -2613,9 +2634,24 @@ class TaskScheduler:
         config_dir.mkdir(parents=True, exist_ok=True)
         
         self.save_file = config_dir / "scheduled_tasks.json"
-        
+
+        # 触发去重（v1.1.5）：同一次触发（任务ID + 日期 + 时分）只允许执行一次。
+        # 用磁盘标记做跨进程锁 —— 软件被打开两个实例时，两个调度器同时到点，
+        # 只有一个能抢到标记，另一个直接跳过，避免同一定时任务被跑两遍。
+        self.slot_dir = config_dir / "scheduler_slots"
+        self._fired_slots = set()
+        try:
+            self.slot_dir.mkdir(parents=True, exist_ok=True)
+            self._cleanup_slot_markers()
+        except Exception:
+            pass
+
         # 可选：打印日志确认路径
         self.app.log_message(f"定时任务文件路径: {self.save_file}")
+        if _detect_other_instance():
+            self.app.log_message(
+                "⚠️ 检测到另一个喵想奇记实例正在运行：定时任务已启用跨实例去重，"
+                "但建议只保留一个窗口（重复打开会导致界面/手动任务也跑两份）")
     
     def start(self):
         if self.running:
@@ -2655,6 +2691,55 @@ class TaskScheduler:
         with self.lock:
             return self.tasks.copy()
     
+    def _slot_key(self, task):
+        """一次触发的唯一标识：任务ID + 当天日期 + 计划时分。"""
+        now = datetime.now()
+        return (f"{getattr(task, 'id', -1)}_"
+                f"{now.strftime('%Y%m%d')}_"
+                f"{int(task.hour):02d}{int(task.minute):02d}")
+
+    def _cleanup_slot_markers(self):
+        """清掉 2 天前的去重标记，避免目录无限增长。"""
+        try:
+            cutoff = time.time() - 2 * 86400
+            for p in self.slot_dir.glob("*.fired"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _claim_slot(self, task):
+        """抢占本次触发名额；True=可以执行，False=这一次已被执行过。
+
+        双重保护：
+        - 内存集合挡同一进程内重复调度；
+        - 磁盘标记用 O_EXCL 原子创建，挡住另一个实例同时触发同一任务。
+        磁盘不可写时退化为仅内存去重，绝不阻断正常任务。
+        """
+        try:
+            key = self._slot_key(task)
+        except Exception:
+            return True
+        if key in self._fired_slots:
+            return False
+        path = self.slot_dir / f"{key}.fired"
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                         .encode("utf-8"))
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            return False
+        except Exception:
+            pass
+        self._fired_slots.add(key)
+        return True
+
     def _update_next_run_time(self, task):
         """计算任务的下次执行时间"""
         now = datetime.now()
@@ -2730,6 +2815,22 @@ class TaskScheduler:
                     if task.next_run_time and task.next_run_time <= now:
                         tasks_to_execute.append(task)
             for task in tasks_to_execute:
+                # 同一次触发只执行一次：挡住双实例 / 重复调度导致的重复执行
+                if not self._claim_slot(task):
+                    self.app.log_message(
+                        f"定时任务重复触发已忽略（该时刻已执行过）："
+                        f"{task.type_text} [{task.target_name}]")
+                    with self.lock:
+                        try:
+                            self._update_next_run_time(task)
+                            if (task.next_run_time is not None
+                                    and task.next_run_time <= datetime.now()):
+                                # 兜底：万一下次时间没推进，直接推迟 1 分钟，避免日志刷屏
+                                task.next_run_time = datetime.now() + timedelta(minutes=1)
+                        except Exception:
+                            task.next_run_time = datetime.now() + timedelta(minutes=1)
+                    threading.Thread(target=self.save_tasks, daemon=True).start()
+                    continue
                 # 执行任务；返回 False 表示用户在倒计时期间取消了本次
                 started = self._execute_task(task)
                 with self.lock:
