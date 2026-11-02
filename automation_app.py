@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -1118,7 +1118,8 @@ class ScreenshotClickEngine:
         self.hit_count = 0
         # 连续跳过自动停止：连续 N 个分支节点超时未命中则自动停止（0 = 关闭）
         self.max_skip_streak = 10
-        self._skip_streak = 0
+        self._skip_streak = 0      # 连续未命中轮数：用于自适应加滚的格数递增，只有分支命中才清零
+        self._stop_streak = 0      # 自动停止计数：分支未命中 +1，滚动成功视为有进展会清零
         
         # 截图数据保存在 exe（或脚本）旁边的 screenshot_click 文件夹，
         # 这样把整个软件文件夹拷到别的电脑时，创建的截图组会一起带走
@@ -1577,6 +1578,7 @@ class ScreenshotClickEngine:
         self.current_index = 0
         self.hit_count = 0
         self._skip_streak = 0
+        self._stop_streak = 0
         self._last_click_ok = True
         self._report_progress()   # 进度条归零
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -1628,11 +1630,18 @@ class ScreenshotClickEngine:
     def _after_success(self, task):
         """任务成功执行后的统一处理：重置连续跳过计数，并按需累计命中数（达到目标自动停止）。
 
-        注意：勾选了「未命中时自动加滚」的滚动任务不清零 _skip_streak——
-        它自己成功不代表找到了目标，加滚计数只能由"分支节点真正命中目标"来清零，
-        否则每轮滚动后计数归零，加滚永远不会生效。"""
-        if not task.get("adaptive_scroll"):
+        两个计数分开（v1.1.7）：
+        - _skip_streak（加滚格数）：勾选了「未命中时自动加滚」的滚动任务成功后
+          不能清零——它自己成功不代表找到了目标，加滚计数只能由
+          "分支节点真正命中目标"来清零，否则每轮滚动后计数归零，加滚永远不会生效。
+        - _stop_streak（自动停止）：滚动成功说明页面翻动了、流程在推进，
+          应当清零——「连续 10 个分支未命中自动停止」只针对真正卡死不动的情况，
+          正常加滚翻页时绝不应触发。"""
+        if task.get("adaptive_scroll"):
+            self._stop_streak = 0   # 有进展：不累计自动停止，但保留加滚计数
+        else:
             self._skip_streak = 0
+            self._stop_streak = 0
         try:
             target = max(0, int(task.get("stop_after_hits", 0) or 0))
         except Exception:
@@ -1865,10 +1874,12 @@ class ScreenshotClickEngine:
             if repeat_round:
                 # 分支命中目标：连续未命中计数清零，滚动任务恢复基础格数
                 self._skip_streak = 0
+                self._stop_streak = 0
                 continue
             if executed_once:
                 # 分支命中目标：连续未命中计数清零，滚动任务恢复基础格数
                 self._skip_streak = 0
+                self._stop_streak = 0
                 return True
             
             # 检查是否超时
@@ -1876,11 +1887,22 @@ class ScreenshotClickEngine:
                 elapsed = time.time() - start_time
                 if elapsed >= timeout_seconds:
                     self._skip_streak += 1
+                    self._stop_streak += 1
                     streak_limit = max(0, int(getattr(self, "max_skip_streak", 0) or 0))
-                    if streak_limit > 0 and self._skip_streak >= streak_limit:
+                    if streak_limit > 0 and self._stop_streak >= streak_limit:
                         self.app.log_message(
-                            f"分支节点 {task_number}/{total} 超时未命中，已连续跳过 {self._skip_streak} 个分支节点，自动停止")
-                        self.stop_reason = f"连续 {self._skip_streak} 个分支节点未命中，已自动停止"
+                            f"分支节点 {task_number}/{total} 超时未命中，已连续跳过 {self._stop_streak} 个分支节点，自动停止")
+                        self.stop_reason = f"连续 {self._stop_streak} 个分支节点未命中，已自动停止"
+                        self.running = False
+                        return False
+                    # 防失控兜底：加滚在持续推进时上面不会停，但若累计太多轮
+                    # （= 已翻了很多页）仍一次都没命中，大概率目标已不存在，
+                    # 无限滚下去没有意义，这里给一个宽上限（默认 10 → 200 轮）
+                    runaway = max(50, streak_limit * 20) if streak_limit > 0 else 200
+                    if self._skip_streak >= runaway:
+                        self.app.log_message(
+                            f"分支节点 {task_number}/{total} 超时未命中，已连续加滚 {self._skip_streak} 轮仍未命中任何目标，自动停止（防失控）")
+                        self.stop_reason = f"连续加滚 {self._skip_streak} 轮未命中任何目标，已自动停止"
                         self.running = False
                         return False
                     self.app.log_message(
