@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -265,6 +265,28 @@ def _pick_exe_urls(info):
     if not url:
         return []
     return ["https://gh-proxy.com/" + url, url]
+
+
+def _pick_exe_sha256(info):
+    """按当前 exe 版本（普通版/Win7 版）选择对应的 SHA256 校验值（可为空）。"""
+    key = "exe_sha256_win7" if _is_win7_build() else "exe_sha256"
+    val = str(info.get(key) or "").strip().lower()
+    if len(val) == 64 and all(c in "0123456789abcdef" for c in val):
+        return val
+    return None
+
+
+def _verify_sha256(path, expected_hex):
+    """分块计算文件 SHA256 并与期望值比对；I/O 出错一律视为不匹配。"""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1048576), b""):
+                h.update(chunk)
+        return h.hexdigest().lower() == expected_hex
+    except Exception:
+        return False
 
 
 def get_dpi_scaling():
@@ -5819,8 +5841,12 @@ class AutomationApp(tk.Tk):
                 pass
 
         def worker():
+            # 临时文件名带上目标版本号：绝不再复用旧版本残留的半截下载，
+            # 否则断点续传会把「旧版本前半段 + 新版本后半段」拼成一个
+            # 大小恰好正确但内容损坏的 exe（解压时报 decompression -3）
+            ver = str(info.get("version") or APP_VERSION)
             tmp = Path(sys.executable).with_name(
-                Path(sys.executable).name + ".update")
+                f"{Path(sys.executable).stem}.v{ver}.update")
 
             def pcb(done, total, speed):
                 if total:
@@ -5840,6 +5866,24 @@ class AutomationApp(tk.Tk):
                 _download_file_adaptive(urls, tmp, pcb, cancel)
                 if cancel.is_set():
                     raise InterruptedError("用户取消")
+                # SHA256 完整性校验：防止残留半截包被续传拼接、或镜像缓存串包。
+                # 校验失败 → 删掉临时文件从头完整重下一次；再失败就放弃替换
+                expected = _pick_exe_sha256(info)
+                if expected and not _verify_sha256(tmp, expected):
+                    ui(lambda: status.config(text="更新包校验失败，正在重新完整下载…"))
+                    self.log_message("⚠️ 更新包 SHA256 校验失败，删除后重新完整下载…")
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
+                    _download_file_adaptive(urls, tmp, pcb, cancel)
+                    if cancel.is_set():
+                        raise InterruptedError("用户取消")
+                    if not _verify_sha256(tmp, expected):
+                        raise RuntimeError(
+                            "更新包完整性校验失败（SHA256 不匹配），已停止替换，"
+                            "请稍后重试或到项目主页手动下载")
+                    self.log_message("✅ 重新下载后校验通过")
             except InterruptedError:
                 try:
                     tmp.unlink()
