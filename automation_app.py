@@ -1184,27 +1184,39 @@ class ScreenshotClickEngine:
     def list_groups(self):
         return [g.get("name", "未命名组") for g in self.groups]
 
-    def get_active_group_loop(self):
-        """当前截图组自己的整组循环次数（1~9999，缺省 1）。"""
-        group = self.get_active_group()
+    def get_group(self, name):
+        """按组名取组对象；找不到就返回 None，绝不做隐式切换。"""
+        return next((g for g in self.groups if g.get("name") == name), None)
+
+    def get_group_loop(self, name):
+        """取指定截图组自己的整组循环次数（1~9999，缺省 1）。"""
+        group = self.get_group(name)
         try:
             return max(1, min(9999, int((group or {}).get("loop_times", 1) or 1)))
         except Exception:
             return 1
 
-    def set_active_group_loop(self, times):
-        """把整组循环次数保存到当前截图组（每组独立，随组数据持久化）。"""
-        group = self.get_active_group()
+    def get_active_group_loop(self):
+        """当前截图组自己的整组循环次数（1~9999，缺省 1）。"""
+        return self.get_group_loop(self.active_group_name)
+
+    def set_group_loop(self, name, times):
+        """把整组循环次数写到「明确指定名字」的组，绝不会串写到别的组。"""
+        group = self.get_group(name)
         if group is None:
             return False
         try:
             times = max(1, min(9999, int(times)))
         except Exception:
-            times = 1
+            return False
         with self.lock:
             group["loop_times"] = times
             self.save_tasks()
         return True
+
+    def set_active_group_loop(self, times):
+        """兼容旧调用：写到引擎当前激活组。"""
+        return self.set_group_loop(self.active_group_name, times)
     
     def set_active_group(self, name):
         with self.lock:
@@ -4526,20 +4538,22 @@ class AutomationApp(tk.Tk):
         ttk.Button(btns, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=5, pady=4)
     
     def refresh_screenshot_group_controls(self):
+        """任何改变「当前组」的操作后，下拉框和本组循环数值必须一起刷新。"""
         if not hasattr(self, "screenshot_group_combo"):
             return
         names = self.screenshot_engine.list_groups()
         self.screenshot_group_combo["values"] = names
-        self.screenshot_group_var.set(self.screenshot_engine.active_group_name)
+        name = self.screenshot_engine.active_group_name
+        self.screenshot_group_var.set(name)
+        self._load_group_loop(name)
     
     def on_screenshot_group_changed(self, event=None):
         name = self.screenshot_group_var.get().strip()
-        # 切换前先把界面上的循环次数存回原来选中的组
-        self._save_current_group_loop()
+        # 切换前把输入框里的数字存回「它原来所属的组」。
+        # 注意此刻下拉框已经是新组名，不能用下拉框的值来判断要保存到哪一组。
+        self._commit_loop_var()
         if self.screenshot_engine.set_active_group(name):
-            # 切换后显示新组自己的循环次数
-            if hasattr(self, "screenshot_loop_var"):
-                self.screenshot_loop_var.set(self.screenshot_engine.get_active_group_loop())
+            self.refresh_screenshot_group_controls()
             self.refresh_screenshot_task_list()
             self.update_screenshot_mode_status(f"当前组：{name}")
     
@@ -5123,18 +5137,98 @@ class AutomationApp(tk.Tk):
             self.refresh_screenshot_task_list()
             self.log_message("已清空截图任务")
     
-    def _save_current_group_loop(self):
-        """把界面上的循环次数保存到当前选中的截图组（每组独立，不互相影响）。"""
+    def _load_group_loop(self, group_name):
+        """显示指定组的循环次数，并记住「输入框里这个数字属于哪个组」。"""
         if not hasattr(self, "screenshot_loop_var"):
+            return
+        self._loop_group_name = group_name
+        self._loop_ui_loading = True
+        try:
+            self.screenshot_loop_var.set(self.screenshot_engine.get_group_loop(group_name))
+        finally:
+            self._loop_ui_loading = False
+
+    def _commit_loop_var(self, group_name=None):
+        """把输入框里的数字写进指定组（默认写进它所属的组）。
+        输入框被清空/填了非数字时不写入任何组，直接恢复该组已保存的值。"""
+        if not hasattr(self, "screenshot_loop_var"):
+            return
+        name = group_name or getattr(self, "_loop_group_name", None)
+        if not name:
             return
         try:
             times = int(self.screenshot_loop_var.get())
         except Exception:
-            times = 1
-        self.screenshot_engine.set_active_group_loop(times)
+            self._load_group_loop(name)
+            return
+        self.screenshot_engine.set_group_loop(name, times)
+
+    def _save_current_group_loop(self):
+        """输入框控件回调：只有数字确实属于界面当前组时才保存。
+        界面已切组但数字还没跟上的情况下只刷新显示，绝不把旧数字写进新组。"""
+        if getattr(self, "_loop_ui_loading", False):
+            return
+        ui_group = ""
+        if hasattr(self, "screenshot_group_var"):
+            ui_group = self.screenshot_group_var.get().strip()
+        loop_group = getattr(self, "_loop_group_name", None)
+        if ui_group and loop_group and ui_group != loop_group:
+            self._load_group_loop(ui_group)
+            return
+        self._commit_loop_var(loop_group or ui_group)
+
+    def sync_screenshot_group_ui(self):
+        """把界面显示同步到引擎当前组。
+        队列 / 定时任务 / 混合组也会在后台切换组，以前不刷新界面，
+        导致输入框里停留着上一组的数字，随后被写到别的组去。"""
+        if not hasattr(self, "screenshot_group_var"):
+            return
+        try:
+            focused = self.focus_get()
+            if focused in (getattr(self, "screenshot_loop_spin", None),
+                           getattr(self, "screenshot_group_combo", None)):
+                return  # 用户正在编辑，别抢他的输入
+        except Exception:
+            pass
+        name = self.screenshot_engine.active_group_name
+        if (self.screenshot_group_var.get().strip() != name
+                or getattr(self, "_loop_group_name", None) != name):
+            self.refresh_screenshot_group_controls()
+
+    def _poll_group_ui(self):
+        """主线程轮询同步（不用后台线程直接操作 Tk，避免线程安全问题）。"""
+        self._poll_group_ui_id = None
+        try:
+            if not self.winfo_exists():
+                return
+            self.sync_screenshot_group_ui()
+            self._poll_group_ui_id = self.after(1000, self._poll_group_ui)
+        except Exception:
+            pass
+
+    def _stop_group_ui_poll(self):
+        """窗口销毁前取消待执行的轮询，避免 Tk 报 invalid command name。"""
+        poll_id = getattr(self, "_poll_group_ui_id", None)
+        if poll_id:
+            try:
+                self.after_cancel(poll_id)
+            except Exception:
+                pass
+        self._poll_group_ui_id = None
+
+    def destroy(self):
+        self._stop_group_ui_poll()
+        return super().destroy()
 
     def start_screenshot_click_mode(self):
         self._save_current_group_loop()
+        # 后台任务可能把引擎切到别的组，启动时以界面上看到的组为准
+        ui_group = ""
+        if hasattr(self, "screenshot_group_var"):
+            ui_group = self.screenshot_group_var.get().strip()
+        if ui_group and ui_group != self.screenshot_engine.active_group_name:
+            self.screenshot_engine.set_active_group(ui_group)
+            self._load_group_loop(ui_group)
         self.screenshot_engine.start()
     
     def stop_screenshot_click_mode(self):
@@ -6311,12 +6405,17 @@ class AutomationApp(tk.Tk):
         ttk.Label(shot_run, text="本组循环：").pack(side=tk.LEFT, padx=(12, 0))
         self.screenshot_loop_var = tk.IntVar(
             value=self.screenshot_engine.get_active_group_loop())
-        loop_spin = ttk.Spinbox(shot_run, from_=1, to=9999, width=6,
-                                textvariable=self.screenshot_loop_var,
-                                command=self._save_current_group_loop)
-        loop_spin.pack(side=tk.LEFT)
-        loop_spin.bind("<Return>", lambda e: self._save_current_group_loop())
-        loop_spin.bind("<FocusOut>", lambda e: self._save_current_group_loop())
+        # 记住输入框里这个数字属于哪个组，避免切组后把上一组的数字写进新组
+        self._loop_group_name = self.screenshot_engine.active_group_name
+        self._loop_ui_loading = False
+        self.screenshot_loop_spin = ttk.Spinbox(
+            shot_run, from_=1, to=9999, width=6,
+            textvariable=self.screenshot_loop_var,
+            command=self._save_current_group_loop)
+        self.screenshot_loop_spin.pack(side=tk.LEFT)
+        self.screenshot_loop_spin.bind("<Return>", lambda e: self._save_current_group_loop())
+        self.screenshot_loop_spin.bind("<FocusOut>", lambda e: self._save_current_group_loop())
+        self._poll_group_ui_id = self.after(1000, self._poll_group_ui)
         ttk.Label(shot_run, text="次（只对当前选中的截图组生效，每组独立保存）").pack(side=tk.LEFT)
         ttk.Button(shot_run, text="入队单个任务",
                    command=self.add_single_screenshot_task_to_queue).pack(side=tk.RIGHT, padx=2)
