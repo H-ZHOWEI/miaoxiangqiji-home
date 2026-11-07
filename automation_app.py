@@ -26,7 +26,7 @@ from pathlib import Path
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.2.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -1108,8 +1108,12 @@ class ScreenshotClickEngine:
         self.running = False
         self.thread = None
         self.lock = Lock()
-        # 防死机：单步（一次识别操作）最长等待时间，超过则自动停止当前任务
-        self.step_timeout_seconds = 300.0
+        # 防死机：单步（一次识别操作）最长等待时间，超过则自动停止当前任务。
+        # 默认 3 分钟：长时间识别不到目标时必须尽快让出运行状态，否则定时任务会被一直挡住。
+        self.step_timeout_seconds = 180.0
+        # 绝对兜底：即使把单步超时设成 0（关闭），或分支节点因反复命中不断重置计时，
+        # 单个节点最多也只跑 10 分钟，绝不会永远占着 running 状态。
+        self.hard_step_timeout_seconds = 600.0
         # 整组循环次数：一次启动里把任务列表从头到尾跑几遍
         self.run_times = 1
         self._loop_base = 0
@@ -1624,17 +1628,32 @@ class ScreenshotClickEngine:
         self.app.log_message(f"按键触发：截图组 [{group_name}] 从头开始执行")
         self.start()
     
-    def _check_step_timeout(self, started_at, task_number, total, display_name):
-        """单步超时（默认 5 分钟）自动停止，防止一直卡在等截图。"""
-        timeout = float(getattr(self, "step_timeout_seconds", 300.0) or 0)
-        if timeout <= 0 or (time.time() - started_at) < timeout:
+    def _check_step_timeout(self, started_at, task_number, total, display_name,
+                            hard_started_at=None):
+        """单步超时（默认 3 分钟）自动停止，防止一直卡在等截图。
+
+        hard_started_at 是「整个节点」的绝对起点，不随命中/连点重置，
+        用来挡住 repeat_until_miss 之类反复刷新计时导致的永不超时。
+        """
+        configured = float(getattr(self, "step_timeout_seconds", 180.0) or 0)
+        hard_cap = float(getattr(self, "hard_step_timeout_seconds", 600.0) or 600.0)
+        timeout = configured if configured > 0 else hard_cap
+        now = time.time()
+        elapsed = now - started_at
+        hard_elapsed = (now - hard_started_at) if hard_started_at else 0.0
+        if elapsed < timeout and hard_elapsed < hard_cap:
             return False
-        span = f"{timeout / 60:g} 分钟" if timeout >= 60 else f"{timeout:g} 秒"
-        reason = f"已超时自动停止：第 {task_number} 步「{display_name}」等待超过 {span}"
+        if hard_elapsed >= hard_cap and elapsed < timeout:
+            reason = (f"已自动停止：第 {task_number} 步「{display_name}」"
+                      f"累计运行超过 {hard_cap / 60:g} 分钟（绝对兜底）")
+            detail = reason
+        else:
+            span = f"{timeout / 60:g} 分钟" if timeout >= 60 else f"{timeout:g} 秒"
+            reason = f"已超时自动停止：第 {task_number} 步「{display_name}」等待超过 {span}"
+            detail = (f"防死机保护：第 {task_number}/{total} 步「{display_name}」"
+                      f"连续 {span} 没有识别成功，已自动停止当前任务")
         self.stop_reason = reason
-        self.app.log_message(
-            f"防死机保护：第 {task_number}/{total} 步「{display_name}」连续 {span}没有识别成功，"
-            f"已自动停止当前任务")
+        self.app.log_message(detail)
         self.running = False
         self.app.after(0, lambda: self.app.update_screenshot_mode_status(reason))
         return True
@@ -1798,8 +1817,10 @@ class ScreenshotClickEngine:
         require_disappear = False
         display_name = task.get("display_name") or "截图任务"
         step_started = time.time()
+        task_started = step_started  # 绝对起点：每次命中重置 step_started 也不会失去兜底
         while self.running and completed < repeat_count:
-            if self._check_step_timeout(step_started, task_number, total, display_name):
+            if self._check_step_timeout(step_started, task_number, total, display_name,
+                                        hard_started_at=task_started):
                 return False
             self.app.after(0, lambda n=task_number, t=total, c=completed, r=repeat_count:
             self.app.update_screenshot_mode_status(
@@ -1834,6 +1855,7 @@ class ScreenshotClickEngine:
         # 命中后连续执行：点完当前画面上所有可见目标（直到超时未命中）才进入下一个任务
         repeat_until_miss = bool(task.get("repeat_until_miss", False))
         start_time = time.time()
+        node_started = start_time  # 绝对起点：连点/命中会刷新 start_time，但不会刷新它
         node_hits = 0
         self._last_click_ok = True
         # 本次节点执行中“点了但没生效”的位置（可能被悬浮元素遮挡），匹配时直接跳过
@@ -1842,7 +1864,8 @@ class ScreenshotClickEngine:
         while self.running:
             # 防死机：分支即使设为无限等待，也不能真的无限等下去
             if self._check_step_timeout(start_time, task_number, total,
-                                        task.get("display_name") or "条件分支"):
+                                        task.get("display_name") or "条件分支",
+                                        hard_started_at=node_started):
                 return False
             # 同时识别所有候选分支
             repeat_round = False
@@ -2670,7 +2693,10 @@ class ScheduledTask:
 
 class TaskScheduler:
     """定时任务调度器（单例）"""
-    
+
+    BUSY_RETRY_SECONDS = 30          # 被占用时每 30 秒重新检查一次
+    BUSY_FORCE_SECONDS = 30 * 60    # 占用过久：强制释放卡死状态，保证定时任务能执行
+
     def __init__(self, app):
         self.app = app
         self.tasks = []
@@ -2696,6 +2722,10 @@ class TaskScheduler:
         # 只有一个能抢到标记，另一个直接跳过，避免同一定时任务被跑两遍。
         self.slot_dir = config_dir / "scheduler_slots"
         self._fired_slots = set()
+        # 定时任务被正在运行的自动化任务挡住时改为「延后补跑」：
+        # 记录首次延后时间与日志限频时间，避免每 30 秒刷屏
+        self._deferred_since = {}
+        self._defer_last_log = {}
         try:
             self.slot_dir.mkdir(parents=True, exist_ok=True)
             self._cleanup_slot_markers()
@@ -2766,6 +2796,73 @@ class TaskScheduler:
                     pass
         except Exception:
             pass
+
+    def _automation_busy(self):
+        """当前是否有自动化任务在跑；顺带复位「线程已退出但标志没清」的僵死状态。"""
+        app = self.app
+        try:
+            engine = app.screenshot_engine
+            worker = getattr(engine, "thread", None)
+            if engine.running and not (worker and worker.is_alive()):
+                engine.running = False
+                app.log_message("⚠️ 截图流程运行标志异常（工作线程已退出），已自动复位，避免挡住定时任务")
+        except Exception:
+            pass
+        try:
+            player = app.player
+            worker = getattr(player, "_thread", None)
+            if player.is_playing and not (worker and worker.is_alive()):
+                player.is_playing = False
+                app.log_message("⚠️ 脚本播放状态异常（工作线程已退出），已自动复位，避免挡住定时任务")
+        except Exception:
+            pass
+        try:
+            return bool(app.player.is_playing or app.screenshot_engine.running)
+        except Exception:
+            return False
+
+    def _release_slot(self, task):
+        """本次触发尚未真正执行，释放去重名额，保证延后补跑时还能抢到名额。"""
+        try:
+            key = self._slot_key(task)
+            self._fired_slots.discard(key)
+            try:
+                (self.slot_dir / f"{key}.fired").unlink()
+            except FileNotFoundError:
+                pass
+        except Exception:
+            pass
+
+    def _defer_due_task(self, task, type_text="定时任务", target=""):
+        """有任务在跑时：只把触发时间推迟 30 秒，不消耗执行次数、不推进到下一周期。
+        空闲后自动补跑；长时间被占用则强制释放僵死状态，保证定时任务最终能执行。"""
+        now = datetime.now()
+        first = self._deferred_since.setdefault(task.id, now)
+        waited = (now - first).total_seconds()
+        label = f"定时任务 [{type_text}：{target}]"
+        if waited >= self.BUSY_FORCE_SECONDS:
+            self.app.log_message(
+                f"⚠️ {label} 已被正在运行的自动化任务挡住超过 "
+                f"{self.BUSY_FORCE_SECONDS // 60:g} 分钟，强制停止当前任务以保证定时任务执行")
+            try:
+                self.app.screenshot_engine.stop(log=False)
+            except Exception:
+                pass
+            try:
+                self.app.player.stop()
+            except Exception:
+                pass
+            self._deferred_since.pop(task.id, None)
+            self._defer_last_log.pop(task.id, None)
+        else:
+            last = self._defer_last_log.get(task.id)
+            if last is None or (now - last).total_seconds() >= 300:
+                self.app.log_message(
+                    f"⏳ {label} 已延后：当前有自动化任务在运行，结束后自动补跑"
+                    "（每 30 秒检查一次，不会跳过本次）")
+                self._defer_last_log[task.id] = now
+        with self.lock:
+            task.next_run_time = now + timedelta(seconds=self.BUSY_RETRY_SECONDS)
 
     def _claim_slot(self, task):
         """抢占本次触发名额；True=可以执行，False=这一次已被执行过。
@@ -2871,6 +2968,17 @@ class TaskScheduler:
                     if task.next_run_time and task.next_run_time <= now:
                         tasks_to_execute.append(task)
             for task in tasks_to_execute:
+                type_text = getattr(task, "type_text", "定时任务")
+                target = (getattr(task, "target_name", None)
+                          or getattr(task, "script_name", ""))
+                # 有自动化任务在跑：延后补跑，绝不直接跳过。
+                # 老逻辑在这里直接 return True，调度器会把本次触发推到下一个周期（明天），
+                # 于是截图任务卡住几分钟就把后面的定时任务全吃掉了。
+                if self._automation_busy():
+                    self._defer_due_task(task, type_text, target)
+                    continue
+                self._deferred_since.pop(task.id, None)
+                self._defer_last_log.pop(task.id, None)
                 # 同一次触发只执行一次：挡住双实例 / 重复调度导致的重复执行
                 if not self._claim_slot(task):
                     self.app.log_message(
@@ -2889,6 +2997,11 @@ class TaskScheduler:
                     continue
                 # 执行任务；返回 False 表示用户在倒计时期间取消了本次
                 started = self._execute_task(task)
+                if started == "busy":
+                    # 倒计时期间用户又启动了任务：释放名额并延后，不消耗本次触发
+                    self._release_slot(task)
+                    self._defer_due_task(task, type_text, target)
+                    continue
                 with self.lock:
                     if not started:
                         self.app.log_message(
@@ -2929,15 +3042,15 @@ class TaskScheduler:
         target = getattr(task, "target_name", None) or getattr(task, "script_name", "")
         type_text = getattr(task, "type_text", task_type)
         
-        # 有任务在跑时不打扰用户，也不弹倒计时
+        # 有任务在跑时不打扰用户，也不弹倒计时（返回 "busy" 让调度器延后补跑）
         try:
-            busy = self.app.player.is_playing or self.app.screenshot_engine.running
+            busy = self._automation_busy()
         except Exception:
             busy = False
         if busy:
             self.app.log_message(
-                f"定时任务 [{type_text}：{target}] 跳过：当前已有自动化任务在执行")
-            return True
+                f"定时任务 [{type_text}：{target}] 延后：当前已有自动化任务在执行")
+            return "busy"
         
         # 启动倒计时：给用户时间先放下手中的输入
         seconds = task.resolve_countdown(self.app)
@@ -3395,11 +3508,11 @@ class AutomationApp(tk.Tk):
         self.trigger_steps = []
         self.trigger_pressed = set()
         self.trigger_fired = False
-        # 单步防死机超时（秒），默认 5 分钟
+        # 单步防死机超时（秒），默认 3 分钟：卡住时尽快让出运行状态给定时任务
         try:
-            timeout_minutes = float(self.app_settings.get("screenshot_step_timeout_minutes", 5))
+            timeout_minutes = float(self.app_settings.get("screenshot_step_timeout_minutes", 3))
         except Exception:
-            timeout_minutes = 5.0
+            timeout_minutes = 3.0
         self.screenshot_step_timeout_minutes = max(0.0, min(120.0, timeout_minutes))
         
         # 在初始化时设置DPI感知
@@ -5786,6 +5899,45 @@ class AutomationApp(tk.Tk):
                 self.player.dpi_scale = new_scale  # 更新播放器的DPI缩放
     
     # ==================== 在线更新 ====================
+    def _base_window_title(self):
+        return f"喵想奇记 v{APP_VERSION} - 版权所有 © 爱吃蟹黄先生"
+
+    def _set_update_title(self, text=""):
+        """把更新进度写在软件抬头（标题栏），不弹模态窗、不抢输入焦点。"""
+        def apply():
+            try:
+                if text:
+                    self.title(f"喵想奇记 v{APP_VERSION} | {text} - 版权所有 © 爱吃蟹黄先生")
+                else:
+                    self.title(self._base_window_title())
+            except Exception:
+                pass
+        try:
+            # 主线程立即刷新；下载线程走事件队列，避免跨线程直接操作 Tk
+            if threading.current_thread() is threading.main_thread():
+                apply()
+            else:
+                self.after(0, apply)
+        except Exception:
+            pass
+
+    def _has_running_tasks(self):
+        """是否还有自动化任务在跑（顺带复位僵死状态），用于更新完成后延迟重启。"""
+        try:
+            sched = getattr(self, "scheduler", None)
+            if sched is not None:
+                if sched._automation_busy():
+                    return True
+                # 有定时任务正在排队等补跑，也算「还有事没做完」，别在这时重启
+                if getattr(sched, "_deferred_since", None):
+                    return True
+        except Exception:
+            pass
+        try:
+            return bool(self.player.is_playing or self.screenshot_engine.running)
+        except Exception:
+            return False
+
     def _startup_update_housekeeping(self):
         """启动收尾：① 清理上次自动更新遗留的旧程序 ② 若刚完成更新则展示
         更新内容 ③ 后台检查新版本。"""
@@ -5844,8 +5996,10 @@ class AutomationApp(tk.Tk):
 
     def _prompt_update_when_idle(self, info, announced=False):
         """发现新版本但正有自动化任务在跑时，不打断用户，等任务结束后再弹窗。"""
+        if getattr(self, "_update_in_progress", False):
+            return  # 更新已在进行，别再弹一次提示
         try:
-            busy = bool(self.player.is_playing or self.screenshot_engine.running)
+            busy = self._has_running_tasks()
         except Exception:
             busy = False
         if busy:
@@ -5877,11 +6031,9 @@ class AutomationApp(tk.Tk):
         self._update_dialog = dlg
         dlg.title("发现新版本")
         dlg.resizable(True, True)
+        # 不 grab_set()：模态锁会让主窗口最小化后无法再获得输入（v1.2.0 修复）
         dlg.transient(self)
-        try:
-            dlg.grab_set()
-        except Exception:
-            pass
+        dlg.bind("<Destroy>", lambda e: setattr(self, "_update_dialog", None))
         frm = ttk.Frame(dlg, padding=12)
         frm.pack(fill=tk.BOTH, expand=True)
         ttk.Label(frm, text=(
@@ -5909,7 +6061,11 @@ class AutomationApp(tk.Tk):
             pass
 
     def _start_update_download(self, info, prompt_dlg=None):
-        """立即更新：下载新 exe（带进度），完成后替换自身并重启。"""
+        """立即更新：后台下载，进度显示在抬头 + 非模态小窗，全程不影响软件使用。"""
+        if getattr(self, "_update_in_progress", False):
+            self.log_message("更新已在进行中，请勿重复启动")
+            return
+        self._update_in_progress = True
         try:
             if prompt_dlg is not None:
                 prompt_dlg.destroy()
@@ -5917,17 +6073,19 @@ class AutomationApp(tk.Tk):
             pass
         urls = _pick_exe_urls(info)
         if not urls:
+            self._update_in_progress = False
             messagebox.showerror("更新失败", "新版本下载地址缺失，请到 GitHub "
                                              "项目主页手动下载。")
             return
+        self._set_update_title("正在连接更新服务器…")
         dlg = tk.Toplevel(self)
         dlg.title("正在更新")
         dlg.resizable(False, False)
-        dlg.transient(self)
-        try:
-            dlg.grab_set()
-        except Exception:
-            pass
+        # 关键修复：不 grab_set()、不 transient()。
+        # 老版本用「模态进度窗 + transient(主窗口)」，主窗口一最小化，
+        # 输入焦点就锁在跟着隐藏的对话框上，软件再也点不开。
+        # 现在下载在后台线程跑，主窗口可正常使用、最小化、跑任务。
+        self._update_progress_dlg = dlg
         frm = ttk.Frame(dlg, padding=14)
         frm.pack(fill=tk.BOTH, expand=True)
         status = ttk.Label(frm, text="正在连接服务器…")
@@ -5941,6 +6099,8 @@ class AutomationApp(tk.Tk):
             status.config(text="正在取消…")
 
         ttk.Button(frm, text="取消", command=do_cancel).pack(anchor=tk.E)
+        # 关掉小窗只是隐藏，下载继续，抬头仍显示进度
+        dlg.protocol("WM_DELETE_WINDOW", dlg.withdraw)
         dlg.update_idletasks()
         try:
             w, h = dlg.winfo_width(), dlg.winfo_height()
@@ -5951,8 +6111,13 @@ class AutomationApp(tk.Tk):
             pass
 
         def ui(fn):
+            def safe():
+                try:
+                    fn()
+                except Exception:
+                    pass  # 进度小窗被关掉后控件已销毁，忽略即可
             try:
-                self.after(0, fn)
+                self.after(0, safe)
             except Exception:
                 pass
 
@@ -5968,15 +6133,16 @@ class AutomationApp(tk.Tk):
                 if total:
                     pct = int(done * 100 / total)
                     mb, tmb = done / 1048576, total / 1048576
-                    ui(lambda p=pct, m=mb, t=tmb, s=speed: (
-                        bar.config(value=p),
-                        status.config(text=(
-                            f"正在下载更新包… {p}%"
-                            f"（{m:.1f}/{t:.1f} MB，{s/1048576:.2f} MB/s）"))))
+                    text = (f"正在下载更新包… {pct}%"
+                            f"（{mb:.1f}/{tmb:.1f} MB，{speed/1048576:.2f} MB/s）")
                 else:
-                    ui(lambda m=done, s=speed: status.config(text=(
-                        f"正在下载更新包… {m/1048576:.1f} MB"
-                        f"（{s/1048576:.2f} MB/s）")))
+                    pct = 0
+                    text = (f"正在下载更新包… {done/1048576:.1f} MB"
+                            f"（{speed/1048576:.2f} MB/s）")
+                # 抬头进度：不依赖任何弹窗，最小化或关掉小窗也照样能看到
+                self._set_update_title(text)
+                ui(lambda p=pct, t=text: (
+                    bar.config(value=p), status.config(text=t)))
 
             try:
                 _download_file_adaptive(urls, tmp, pcb, cancel)
@@ -5986,6 +6152,7 @@ class AutomationApp(tk.Tk):
                 # 校验失败 → 删掉临时文件从头完整重下一次；再失败就放弃替换
                 expected = _pick_exe_sha256(info)
                 if expected and not _verify_sha256(tmp, expected):
+                    self._set_update_title("更新包校验失败，正在重新下载…")
                     ui(lambda: status.config(text="更新包校验失败，正在重新完整下载…"))
                     self.log_message("⚠️ 更新包 SHA256 校验失败，删除后重新完整下载…")
                     try:
@@ -6005,8 +6172,15 @@ class AutomationApp(tk.Tk):
                     tmp.unlink()
                 except Exception:
                     pass
-                ui(lambda: (dlg.destroy(),
-                            self.log_message("已取消更新。")))
+                def cancelled():
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+                    self._set_update_title("")
+                    self._update_in_progress = False
+                    self.log_message("已取消更新。")
+                ui(cancelled)
                 return
             except Exception as e:
                 try:
@@ -6015,7 +6189,12 @@ class AutomationApp(tk.Tk):
                     pass
 
                 def fail():
-                    dlg.destroy()
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+                    self._set_update_title("")
+                    self._update_in_progress = False
                     messagebox.showerror(
                         "更新失败", f"下载更新包失败：\n{e}\n\n"
                         "请检查网络后重试，或到 GitHub 项目主页手动下载。")
@@ -6026,7 +6205,7 @@ class AutomationApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _finalize_update(self, info, tmp_path, dlg=None):
-        """下载完成：写更新内容标记 → 旧 exe 改名留档 → 新 exe 就位 → 重启。"""
+        """下载完成：替换程序文件 → 等正在跑的任务结束 → 提示更新完毕 → 自动重启。"""
         ver = str(info.get("version", APP_VERSION))
         changelog = str(info.get("changelog", "") or "")
         try:
@@ -6034,6 +6213,7 @@ class AutomationApp(tk.Tk):
                 dlg.destroy()
         except Exception:
             pass
+        self._set_update_title("更新包已就绪，正在准备替换程序…")
         exe = Path(sys.executable).resolve()
         old = exe.with_name(exe.name + ".old")
         try:
@@ -6044,15 +6224,100 @@ class AutomationApp(tk.Tk):
             shutil.move(str(tmp_path), str(exe))
         except Exception as e:
             clear_pending_changelog()
+            self._set_update_title("")
+            self._update_in_progress = False
             messagebox.showerror(
                 "更新失败", f"替换程序文件失败：\n{e}\n\n"
                 "请关闭杀毒软件后重试，或到 GitHub 项目主页手动下载覆盖。")
             return
+        # 新 exe 已就位，但先不重启：还有任务在跑就等它结束，绝不打断用户
+        self.log_message(f"✅ v{ver} 更新包已就位，检查是否还有正在运行的任务…")
+        self._wait_tasks_before_restart(ver, waited=0)
+
+    def _wait_tasks_before_restart(self, ver, waited=0):
+        """更新包已就位：还有任务在跑就先等它结束（每秒检查），空闲后再提醒并重启。"""
+        if self._has_running_tasks():
+            self._set_update_title(f"v{ver} 已就绪 · 等待当前任务结束后重启…")
+            if waited % 60 == 0:
+                self.log_message(
+                    f"⏳ 更新 v{ver} 已就绪，仍有自动化任务在运行，结束后再提醒并重启")
+            if waited < 1800:  # 30 分钟兜底，避免任务异常卡住导致更新永不生效
+                self.after(1000, lambda: self._wait_tasks_before_restart(ver, waited + 1))
+                return
+            self.log_message("⚠️ 等待任务结束超过 30 分钟，更新将继续重启")
+        self._announce_update_done(ver)
+
+    def _announce_update_done(self, ver, seconds=5):
+        """非模态提示「更新完毕」，倒计时结束自动重启；期间又开任务则继续等待。"""
+        self._set_update_title(f"v{ver} 更新完毕，即将自动重启")
+        try:
+            old_win = getattr(self, "_update_done_win", None)
+            if old_win is not None and old_win.winfo_exists():
+                old_win.destroy()
+        except Exception:
+            pass
+        win = tk.Toplevel(self)
+        self._update_done_win = win
+        win.title("更新完毕")
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=14)
+        frm.pack(fill=tk.BOTH, expand=True)
+        label = ttk.Label(frm, text=f"✅ 已更新到 v{ver}\n软件将在 {seconds} 秒后自动重启",
+                          font=("Microsoft YaHei", 10))
+        label.pack(anchor=tk.W)
+        ttk.Button(frm, text="立即重启",
+                   command=lambda: self._relaunch_for_update(ver)).pack(
+                       anchor=tk.E, pady=(10, 0))
+        # 关掉提示窗只是隐藏，倒计时照走，最后仍会自动重启
+        win.protocol("WM_DELETE_WINDOW", win.withdraw)
+        win.update_idletasks()
+        try:
+            w, h = win.winfo_width(), win.winfo_height()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 3
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        def tick(remain):
+            if getattr(self, "_update_restarting", False):
+                return
+            if self._has_running_tasks():
+                # 用户又启动了任务：撤掉提示，回到等待状态
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                self._set_update_title(f"v{ver} 已就绪 · 等待当前任务结束后重启…")
+                self.log_message("检测到又开始执行任务，重启继续延后，等任务结束再提醒")
+                self.after(1000, lambda: self._wait_tasks_before_restart(ver, waited=0))
+                return
+            if remain <= 0:
+                self._relaunch_for_update(ver)
+                return
+            try:
+                if win.winfo_exists():
+                    label.config(text=f"✅ 已更新到 v{ver}\n软件将在 {remain} 秒后自动重启")
+            except Exception:
+                pass
+            self.after(1000, lambda: tick(remain - 1))
+
+        self.after(1000, lambda: tick(seconds - 1))
+
+    def _relaunch_for_update(self, ver):
+        """启动新版本并退出当前进程（只执行一次）。"""
+        if getattr(self, "_update_restarting", False):
+            return
+        self._update_restarting = True
+        exe = Path(sys.executable).resolve()
         try:
             child_env = _clean_child_env_for_relaunch()
             subprocess.Popen([str(exe)], cwd=str(exe.parent), env=child_env,
                              close_fds=True)
         except Exception as e:
+            self._update_restarting = False
+            self._update_in_progress = False
+            self._set_update_title("")
             messagebox.showerror("更新失败", f"新版本已就位，但自动启动失败：\n{e}\n"
                                              f"请手动运行：\n{exe}")
             return
@@ -8038,11 +8303,11 @@ class AutomationApp(tk.Tk):
         engine.trigger_restart()
     
     def set_screenshot_step_timeout(self, minutes):
-        """设置单步防死机超时（分钟，0 = 关闭保护）。"""
+        """设置单步防死机超时（分钟，0 = 关闭业务超时，仍有 10 分钟绝对兜底）。"""
         try:
             minutes = float(minutes)
         except Exception:
-            minutes = 5.0
+            minutes = 3.0
         minutes = max(0.0, min(120.0, minutes))
         self.screenshot_step_timeout_minutes = minutes
         self.screenshot_engine.step_timeout_seconds = minutes * 60
@@ -8057,7 +8322,7 @@ class AutomationApp(tk.Tk):
         try:
             minutes = int(self.screenshot_timeout_var.get())
         except Exception:
-            minutes = 5
+            minutes = 3
         minutes = max(0, min(120, minutes))
         self.screenshot_timeout_var.set(minutes)
         self.set_screenshot_step_timeout(minutes)
