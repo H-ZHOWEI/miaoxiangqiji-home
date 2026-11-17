@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import urllib.request
+import ssl
 import random
 from pathlib import Path
 
@@ -34,7 +35,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -211,29 +212,70 @@ def clear_pending_changelog(base=None):
         pass
 
 
-_OPENER_DIRECT = None
+_OPENER_CACHE = {}
+
+
+def _make_update_ssl_context(secure=True):
+    """构造更新请求用的 SSL 上下文。
+
+    secure=True ：优先用 certifi 自带根证书（Win7 系统证书库太旧时也能严格
+                  校验），没有 certifi 就用默认校验。
+    secure=False：不校验证书，仅供 Win7 严格校验失败后回退；下载后有 SHA256
+                  完整性校验兜底，不会因此装进被篡改的文件。
+    """
+    try:
+        if not secure:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        try:
+            import certifi
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            return ssl.create_default_context()
+    except Exception:
+        return None
+
+
+def _get_update_opener(direct=True, secure=True):
+    """按「直连/走代理」×「严格/兼容证书」组合缓存 opener。"""
+    key = (bool(direct), bool(secure))
+    opener = _OPENER_CACHE.get(key)
+    if opener is None:
+        handlers = []
+        if direct:
+            # gh-proxy 等国内加速源直连远快于走 VPN
+            handlers.append(urllib.request.ProxyHandler({}))
+        ctx = _make_update_ssl_context(secure)
+        if ctx is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        opener = urllib.request.build_opener(*handlers)
+        _OPENER_CACHE[key] = opener
+    return opener
 
 
 def _get_direct_opener():
-    """绕过系统代理的直连 opener（gh-proxy 等国内加速源直连远快于走 VPN）。"""
-    global _OPENER_DIRECT
-    if _OPENER_DIRECT is None:
-        _OPENER_DIRECT = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}))
-    return _OPENER_DIRECT
+    """兼容旧调用：绕过系统代理 + 严格校验证书的 opener。"""
+    return _get_update_opener(direct=True, secure=True)
 
 
 def _open_url(url, timeout=15, headers=None):
-    """打开更新相关 URL：先绕过系统代理直连，失败再走系统代理。
-    （实测本机走 VPN 访问 gh-proxy 仅 0.26MB/s，直连可达 68MB/s）"""
+    """打开更新相关 URL。
+
+    顺序：直连严格 → 直连兼容 → 代理严格 → 代理兼容。
+    Win7 的 Python 3.8 没有 certifi，系统根证书又旧，严格校验会报
+    CERTIFICATE_VERIFY_FAILED；此时自动改用兼容通道，用户无感。
+    """
     hdrs = {"User-Agent": "MiaoXiangQiJi-Updater"}
     if headers:
         hdrs.update(headers)
     last_err = None
-    for opener in (_get_direct_opener(), urllib.request.build_opener()):
+    for direct, secure in ((True, True), (True, False),
+                           (False, True), (False, False)):
         try:
             req = urllib.request.Request(url, headers=hdrs)
-            return opener.open(req, timeout=timeout)
+            return _get_update_opener(direct, secure).open(req, timeout=timeout)
         except Exception as e:
             last_err = e
     raise last_err
@@ -6405,6 +6447,12 @@ class AutomationApp(tk.Tk):
                 info = _fetch_latest_release_info()
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
+                low = str(e).lower()
+                if "certificate_verify_failed" in low or "certificate verify failed" in low:
+                    err += ("\n\n这是 Win7 系统根证书过旧导致的 HTTPS 校验失败，"
+                            "不是网络故障。请到 GitHub 项目主页 "
+                            "https://github.com/H-ZHOWEI/miaoxiangqiji-home "
+                            "手动下载最新版覆盖安装一次，之后即可正常自动更新。")
 
             def apply():
                 if err is not None:
