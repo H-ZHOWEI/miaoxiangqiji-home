@@ -48,6 +48,9 @@ MSG_GROUP_LIST = "group_list"     # 电脑上报的可执行任务组清单（�
 SETTING_ENABLED = "phone_link_enabled"
 SETTING_PAIR_CODE = "phone_link_pair_code"
 SETTING_POLL_SEC = "phone_link_poll_sec"
+# v1.4.0 新增：电脑端作为「控制端」的设备列表（对端电脑的配对码）
+SETTING_DEVICES = "phone_link_devices"              # JSON: [{"code": "...", "name": "..."}]
+SETTING_ACTIVE_DEVICE = "phone_link_active_device"  # 当前查看/遥控的设备配对码
 
 
 def _headers():
@@ -482,6 +485,158 @@ class PhoneLink:
         if not self._online:
             return "手机联动：连接中/离线"
         return "手机联动：在线（%s）" % (self.pair_code[:4] + "****")
+
+    # ================================================================== 控制端（电脑↔电脑）
+    # 说明：对端电脑与本机跑的是同一套协议（pc2phone 写通知、phone2pc 收指令），
+    #       因此「电脑控制电脑」与「手机控制电脑」在云端完全等价，只是把配对码
+    #       换成对端电脑的配对码即可。以下方法均显式传入目标配对码，绝不动本机
+    #       被控端的 pair_code / mailbox。
+
+    def get_devices(self):
+        """返回已配对设备列表：[{"code": str, "name": str}, ...]。"""
+        raw = self.settings.get(SETTING_DEVICES, "")
+        devices = []
+        if isinstance(raw, list):
+            devices = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    devices = parsed
+            except Exception:
+                devices = []
+        result = []
+        for d in devices:
+            if not isinstance(d, dict):
+                continue
+            code = str(d.get("code", "") or "").strip().upper()
+            if not code:
+                continue
+            result.append({"code": code, "name": str(d.get("name", "") or "未命名设备")})
+        return result
+
+    def _write_devices(self, devices):
+        self.settings[SETTING_DEVICES] = json.dumps(devices, ensure_ascii=False)
+        self.save_settings()
+
+    def add_device(self, code, name=""):
+        """新增/更新一台设备，返回 (成功, 提示)。已存在则改名并切换为当前。"""
+        code = str(code or "").strip().upper()
+        if len(code) < 4:
+            return False, "配对码至少 4 位"
+        if code == self.pair_code:
+            return False, "这是本机配对码，不能添加为自己"
+        devices = self.get_devices()
+        devices = [d for d in devices if d["code"] != code]
+        devices.append({"code": code, "name": str(name or "").strip() or "电脑 %d" % (len(devices) + 1)})
+        self._write_devices(devices)
+        self.set_active_device(code)
+        return True, "已添加并切换为当前设备"
+
+    def remove_device(self, code):
+        code = str(code or "").strip().upper()
+        devices = [d for d in self.get_devices() if d["code"] != code]
+        self._write_devices(devices)
+        if self.active_device_code == code:
+            self.set_active_device(devices[0]["code"] if devices else "")
+
+    def rename_device(self, code, name):
+        code = str(code or "").strip().upper()
+        devices = self.get_devices()
+        for d in devices:
+            if d["code"] == code:
+                d["name"] = str(name or "").strip() or d["name"]
+        self._write_devices(devices)
+
+    @property
+    def active_device_code(self):
+        code = str(self.settings.get(SETTING_ACTIVE_DEVICE, "") or "").strip().upper()
+        devices = self.get_devices()
+        if code and any(d["code"] == code for d in devices):
+            return code
+        return devices[0]["code"] if devices else ""
+
+    def set_active_device(self, code):
+        code = str(code or "").strip().upper()
+        if code and any(d["code"] == code for d in self.get_devices()):
+            self.settings[SETTING_ACTIVE_DEVICE] = code
+            self.save_settings()
+
+    def active_device_name(self, code=None):
+        code = str(code or self.active_device_code or "").strip().upper()
+        for d in self.get_devices():
+            if d["code"] == code:
+                return d["name"]
+        return "未选择设备"
+
+    def fetch_device_snapshot(self, code):
+        """读取某台电脑的当前快照：在线状态、任务组清单、任务通知。
+        供 UI 在后台线程调用；返回 dict：
+            {ok, name, online, minutes_ago, groups:[{type,name,label}], notifications:[...]}
+        """
+        code = str(code or "").strip().upper()
+        result = {"ok": False, "name": self.active_device_name(code),
+                  "online": False, "minutes_ago": None,
+                  "groups": [], "notifications": [], "error": ""}
+        if not code:
+            result["error"] = "未选择设备"
+            return result
+        box = CloudMailbox(code)
+        # 心跳
+        ok, rows = box.get_latest(DIR_PC2PHONE, MSG_HEARTBEAT, 1)
+        if ok and rows:
+            try:
+                created = rows[0].get("created_at", "")
+                if created:
+                    import datetime
+                    ts = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    result["minutes_ago"] = int((time.time() - ts.timestamp()) / 60)
+                    result["online"] = result["minutes_ago"] <= 5
+            except Exception:
+                pass
+        # 任务组清单
+        ok, rows = box.get_latest(DIR_PC2PHONE, MSG_GROUP_LIST, 1)
+        if ok and rows:
+            try:
+                payload = rows[0].get("payload") or "{}"
+                data = json.loads(payload) if isinstance(payload, str) else payload
+                result["groups"] = data.get("groups", []) or []
+            except Exception:
+                pass
+        # 任务通知（完成 + 失败）
+        notices = []
+        for mt in (MSG_TASK_DONE, MSG_TASK_FAILED):
+            ok, rows = box.get_latest(DIR_PC2PHONE, mt, 8)
+            if ok:
+                for r in (rows or []):
+                    notices.append({
+                        "id": r.get("id"),
+                        "type": mt,
+                        "title": r.get("title", ""),
+                        "content": r.get("content", ""),
+                        "created_at": r.get("created_at", ""),
+                    })
+        notices.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+        result["notifications"] = notices[:12]
+        result["ok"] = True
+        return result
+
+    def send_device_command(self, code, target_type, target_name):
+        """向某台电脑下发「执行任务组」指令（写它的 phone2pc 信箱）。"""
+        code = str(code or "").strip().upper()
+        if not code:
+            return False, "未选择设备"
+        payload = {"target_type": target_type, "target_name": target_name}
+        box = CloudMailbox(code)
+        ok, resp = box.send(DIR_PHONE2PC, MSG_COMMAND, "执行任务", target_name, payload)
+        return bool(ok), ("" if ok else str(resp))
+
+    def clear_device_messages(self, code):
+        code = str(code or "").strip().upper()
+        if not code:
+            return False
+        ok, _ = CloudMailbox(code).clear_own()
+        return bool(ok)
 
 
 def _fmt_duration(seconds):

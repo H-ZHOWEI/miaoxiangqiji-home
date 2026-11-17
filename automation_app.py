@@ -33,7 +33,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -3674,74 +3674,320 @@ class AutomationApp(tk.Tk):
             self.log_message("保存手机联动设置失败：%s" % e)
 
     def open_phone_link_dialog(self):
-        """弹出「手机联动」配置窗口：配对码 / 启用 / 状态。"""
+        """弹出「手机联动 / 电脑联动」配置窗口：本机设置 + 设备（电脑↔电脑遥控）。"""
         if _phone_link is None or self.phone_link is None:
             messagebox.showerror("手机联动不可用", "联动模块未能加载，请检查安装。")
             return
+        link = self.phone_link
         dlg = tk.Toplevel(self)
-        dlg.title("手机联动设置")
+        dlg.title("联动设置")
         dlg.transient(self)
-        dlg.resizable(False, False)
-        dlg.columnconfigure(1, weight=1)
-        pad = {"padx": 8, "pady": 6}
-        ttk.Label(dlg, text="让电脑与手机互相通知、远程下发任务",
-                  font=('微软雅黑', 10, 'bold')).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+        dlg.resizable(True, True)
+        dlg.geometry("640x560")
+        dlg.columnconfigure(0, weight=1)
+        dlg.rowconfigure(1, weight=1)
 
+        ttk.Label(dlg, text="电脑 · 手机 双向联动（通知 + 远程执行）",
+                  font=('微软雅黑', 11, 'bold')).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 4))
+
+        nb = ttk.Notebook(dlg)
+        nb.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        page_local = ttk.Frame(nb)
+        page_dev = ttk.Frame(nb)
+        nb.add(page_local, text="  本机设置（被手机/其他电脑控制）  ")
+        nb.add(page_dev, text="  设备（遥控其他电脑）  ")
+
+        # ==================== 页1：本机设置 ====================
+        page_local.columnconfigure(1, weight=1)
+        pad = {"padx": 8, "pady": 6}
         enabled_var = tk.BooleanVar(value=bool(self.app_settings.get(_phone_link.SETTING_ENABLED)))
         pair_var = tk.StringVar(value=self.app_settings.get(_phone_link.SETTING_PAIR_CODE, ""))
-        status_var = tk.StringVar(value=self.phone_link.status_text())
+        status_var = tk.StringVar(value=link.status_text())
 
-        ttk.Checkbutton(dlg, text="启用手机联动", variable=enabled_var).grid(
-            row=1, column=0, columnspan=3, sticky="w", **pad)
-        ttk.Label(dlg, text="配对码：").grid(row=2, column=0, sticky="e", **pad)
-        pair_entry = ttk.Entry(dlg, textvariable=pair_var, width=20, font=('Consolas', 11))
-        pair_entry.grid(row=2, column=1, sticky="ew", **pad)
-
-        def gen_code():
-            pair_var.set(_phone_link.new_pair_code())
-
-        ttk.Button(dlg, text="生成新配对码", command=gen_code).grid(row=2, column=2, **pad)
-        ttk.Label(dlg, text="状态：").grid(row=3, column=0, sticky="e", **pad)
-        ttk.Label(dlg, textvariable=status_var, foreground='#0078d4').grid(
-            row=3, column=1, columnspan=2, sticky="w", **pad)
+        ttk.Checkbutton(page_local, text="启用联动（允许手机/其他电脑控制本机、并上报本机任务通知）",
+                        variable=enabled_var).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Label(page_local, text="本机配对码：").grid(row=1, column=0, sticky="e", **pad)
+        pair_entry = ttk.Entry(page_local, textvariable=pair_var, width=20, font=('Consolas', 11))
+        pair_entry.grid(row=1, column=1, sticky="ew", **pad)
+        ttk.Button(page_local, text="生成新配对码",
+                   command=lambda: pair_var.set(_phone_link.new_pair_code())).grid(row=1, column=2, **pad)
+        ttk.Label(page_local, text="状态：").grid(row=2, column=0, sticky="e", **pad)
+        ttk.Label(page_local, textvariable=status_var, foreground='#0078d4').grid(
+            row=2, column=1, columnspan=2, sticky="w", **pad)
 
         tip = ("使用步骤：\n"
                "1. 点「生成新配对码」，记住这串码（如 AB3D7K9M）；\n"
-               "2. 在手机 App 里填同一个配对码；\n"
-               "3. 勾选「启用手机联动」并保存；\n"
-               "4. 任务完成/失败会自动通知手机；在手机点任务组可远程让电脑执行。\n"
+               "2. 在手机 App 或另一台电脑的「设备」页填同一个配对码；\n"
+               "3. 勾选「启用联动」并保存；\n"
+               "4. 本机任务完成/失败会自动通知对端；对端点任务组可远程让本机执行。\n"
                "提示：配对码就是钥匙，不要告诉别人。")
-        ttk.Label(dlg, text=tip, justify=tk.LEFT, foreground='#555555').grid(
-            row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 8))
+        ttk.Label(page_local, text=tip, justify=tk.LEFT, foreground='#555555').grid(
+            row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 8))
 
-        btn_row = ttk.Frame(dlg)
-        btn_row.grid(row=5, column=0, columnspan=3, sticky="e", padx=8, pady=(0, 8))
+        local_btn = ttk.Frame(page_local)
+        local_btn.grid(row=4, column=0, columnspan=3, sticky="e", padx=8, pady=(0, 8))
 
-        def do_save():
+        def do_save_local():
             code = pair_var.get().strip().upper()
             if enabled_var.get() and not code:
                 messagebox.showwarning("提示", "请先生成或填写配对码。", parent=dlg)
                 return
-            self.phone_link.set_enabled(enabled_var.get())
-            self.phone_link.set_pair_code(code)
+            link.set_enabled(enabled_var.get())
+            link.set_pair_code(code)
             if enabled_var.get():
-                self.phone_link.sync_group_list()
-            status_var.set(self.phone_link.status_text())
-            self.log_message("手机联动设置已保存（%s）" %
+                link.sync_group_list()
+            status_var.set(link.status_text())
+            self.log_message("联动设置已保存（%s）" %
                              ("已启用" if enabled_var.get() else "已关闭"))
-            messagebox.showinfo("已保存", "手机联动设置已保存。", parent=dlg)
+            messagebox.showinfo("已保存", "本机联动设置已保存。", parent=dlg)
 
-        def do_clear():
+        def do_clear_local():
             if not messagebox.askyesno("确认", "清空本配对码在云端的全部消息？\n"
                                                 "（不影响你的任务数据）", parent=dlg):
                 return
             ok, _ = _phone_link.CloudMailbox(pair_var.get().strip().upper()).clear_own()
             messagebox.showinfo("完成", "云端消息已清空。" if ok else "清空失败，请检查网络。", parent=dlg)
 
-        ttk.Button(btn_row, text="清空云端消息", command=do_clear).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_row, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(btn_row, text="保存", style='Primary.TButton',
-                   command=do_save).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(local_btn, text="清空本机云端消息", command=do_clear_local).pack(side=tk.LEFT, padx=4)
+        ttk.Button(local_btn, text="保存本机设置", style='Primary.TButton',
+                   command=do_save_local).pack(side=tk.RIGHT, padx=4)
+
+        # ==================== 页2：设备（遥控其他电脑） ====================
+        self._build_device_page(page_dev, link, dlg)
+
+        close_row = ttk.Frame(dlg)
+        close_row.grid(row=2, column=0, sticky="e", padx=10, pady=(0, 10))
+        ttk.Button(close_row, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
+
+    def _build_device_page(self, parent, link, dlg):
+        """构造「设备」页：设备选择 + 状态/任务组/通知（后台线程读取）。"""
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(3, weight=1)
+        pad = {"padx": 8, "pady": 5}
+
+        ttk.Label(parent, text="添加其他电脑的配对码，即可在这里查看它的任务组并远程遥控它执行。",
+                  foreground='#555555', wraplength=600, justify=tk.LEFT).grid(
+            row=0, column=0, columnspan=4, sticky="w", **pad)
+
+        dev_var = tk.StringVar()
+        dev_combo = ttk.Combobox(parent, textvariable=dev_var, state="readonly", width=24)
+
+        def device_labels():
+            devs = link.get_devices()
+            labels = ["%s（%s）" % (d["name"], d["code"][:4] + "****") for d in devs]
+            return devs, labels
+
+        def refresh_device_list(select_code=None):
+            devs, labels = device_labels()
+            dev_combo["values"] = labels
+            active = select_code or link.active_device_code
+            idx = next((i for i, d in enumerate(devs) if d["code"] == active), 0)
+            if labels:
+                dev_combo.current(idx)
+                dev_var.set(labels[idx])
+            else:
+                dev_var.set("")
+            return devs, idx
+
+        ttk.Label(parent, text="当前设备：").grid(row=1, column=0, sticky="e", **pad)
+        dev_combo.grid(row=1, column=1, sticky="ew", **pad)
+
+        def on_pick(event=None):
+            devs = link.get_devices()
+            labels = [("%s（%s）" % (d["name"], d["code"][:4] + "****")) for d in devs]
+            idx = labels.index(dev_var.get()) if dev_var.get() in labels else -1
+            if idx >= 0:
+                link.set_active_device(devs[idx]["code"])
+                load_snapshot()
+
+        dev_combo.bind("<<ComboboxSelected>>", on_pick)
+
+        dev_ops = ttk.Frame(parent)
+        dev_ops.grid(row=1, column=2, columnspan=2, sticky="ew", **pad)
+
+        def do_add():
+            sub = tk.Toplevel(dlg)
+            sub.title("添加设备")
+            sub.transient(dlg)
+            sub.resizable(False, False)
+            sub.columnconfigure(1, weight=1)
+            ttk.Label(sub, text="设备名称：").grid(row=0, column=0, sticky="e", **pad)
+            name_e = ttk.Entry(sub, width=22)
+            name_e.grid(row=0, column=1, sticky="ew", **pad)
+            ttk.Label(sub, text="配对码：").grid(row=1, column=0, sticky="e", **pad)
+            code_e = ttk.Entry(sub, width=22, font=('Consolas', 11))
+            code_e.grid(row=1, column=1, sticky="ew", **pad)
+            ttk.Label(sub, text="（在对方电脑「本机设置」里生成）", foreground='#888888').grid(
+                row=2, column=1, sticky="w", **pad)
+
+            def confirm():
+                ok, msg = link.add_device(code_e.get(), name_e.get())
+                if not ok:
+                    messagebox.showwarning("提示", msg, parent=sub)
+                    return
+                refresh_device_list(link.active_device_code)
+                sub.destroy()
+                load_snapshot()
+                self.log_message("联动：添加设备 %s" % msg)
+
+            ttk.Button(sub, text="添加并切换", style='Primary.TButton', command=confirm).grid(
+                row=3, column=0, columnspan=2, sticky="e", padx=8, pady=8)
+
+        def do_remove():
+            code = link.active_device_code
+            if not code:
+                messagebox.showinfo("提示", "没有可删除的设备。", parent=dlg)
+                return
+            if not messagebox.askyesno("确认", "删除设备「%s」？" % link.active_device_name(code), parent=dlg):
+                return
+            link.remove_device(code)
+            refresh_device_list()
+            load_snapshot()
+
+        def do_rename():
+            code = link.active_device_code
+            if not code:
+                messagebox.showinfo("提示", "请先选择设备。", parent=dlg)
+                return
+            cur = link.active_device_name(code)
+            val = simpledialog.askstring("重命名设备", "新名称：", initialvalue=cur, parent=dlg)
+            if val and val.strip():
+                link.rename_device(code, val.strip())
+                refresh_device_list(code)
+
+        ttk.Button(dev_ops, text="＋添加", command=do_add).pack(side=tk.LEFT, padx=2)
+        ttk.Button(dev_ops, text="改名", command=do_rename).pack(side=tk.LEFT, padx=2)
+        ttk.Button(dev_ops, text="删除", command=do_remove).pack(side=tk.LEFT, padx=2)
+
+        # 状态行
+        dev_status_var = tk.StringVar(value="状态：请先添加设备")
+        ttk.Label(parent, textvariable=dev_status_var, foreground='#0078d4').grid(
+            row=2, column=0, columnspan=4, sticky="w", **pad)
+
+        # 任务组 + 通知 双栏
+        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        paned.grid(row=3, column=0, columnspan=4, sticky="nsew", padx=8, pady=4)
+        left = ttk.Frame(paned)
+        right = ttk.Frame(paned)
+        paned.add(left, weight=1)
+        paned.add(right, weight=1)
+
+        ttk.Label(left, text="远程执行（点一下让该电脑执行）",
+                  font=('微软雅黑', 9, 'bold')).pack(anchor="w", pady=(2, 4))
+        task_canvas_frame = ttk.Frame(left)
+        task_canvas_frame.pack(fill=tk.BOTH, expand=True)
+        task_canvas = tk.Canvas(task_canvas_frame, height=220, highlightthickness=0)
+        task_scroll = ttk.Scrollbar(task_canvas_frame, orient=tk.VERTICAL, command=task_canvas.yview)
+        task_canvas.configure(yscrollcommand=task_scroll.set)
+        task_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        task_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        task_inner = ttk.Frame(task_canvas)
+        task_canvas.create_window((0, 0), window=task_inner, anchor="nw")
+        task_inner.bind("<Configure>", lambda e: task_canvas.configure(scrollregion=task_canvas.bbox("all")))
+
+        ttk.Label(right, text="最近任务通知",
+                  font=('微软雅黑', 9, 'bold')).pack(anchor="w", pady=(2, 4))
+        notify_canvas_frame = ttk.Frame(right)
+        notify_canvas_frame.pack(fill=tk.BOTH, expand=True)
+        notify_canvas = tk.Canvas(notify_canvas_frame, height=220, highlightthickness=0)
+        notify_scroll = ttk.Scrollbar(notify_canvas_frame, orient=tk.VERTICAL, command=notify_canvas.yview)
+        notify_canvas.configure(yscrollcommand=notify_scroll.set)
+        notify_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        notify_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        notify_inner = ttk.Frame(notify_canvas)
+        notify_canvas.create_window((0, 0), window=notify_inner, anchor="nw")
+        notify_inner.bind("<Configure>", lambda e: notify_canvas.configure(scrollregion=notify_canvas.bbox("all")))
+
+        def on_run_group(gt, gn, glabel):
+            code = link.active_device_code
+            if not code:
+                messagebox.showinfo("提示", "请先选择设备。", parent=dlg)
+                return
+            if not messagebox.askyesno("远程执行",
+                                       "让「%s」立即执行：\n%s「%s」？\n\n（对方正在跑其他任务时会忽略本次指令）"
+                                       % (link.active_device_name(code), glabel, gn), parent=dlg):
+                return
+            ok, err = link.send_device_command(code, gt, gn)
+            if ok:
+                messagebox.showinfo("已发送", "指令已发给「%s」，对方空闲时会执行。" %
+                                    link.active_device_name(code), parent=dlg)
+                self.log_message("联动：遥控 %s 执行 [%s]" % (link.active_device_name(code), gn))
+            else:
+                messagebox.showerror("发送失败", "指令发送失败：%s" % err, parent=dlg)
+
+        def render_snapshot(snap):
+            # 主线程渲染
+            if not snap.get("ok"):
+                dev_status_var.set("状态：%s" % snap.get("error", "读取失败"))
+            else:
+                mins = snap.get("minutes_ago")
+                online = snap.get("online")
+                if online:
+                    dev_status_var.set("状态：● %s 在线（心跳 %s 分钟前）" %
+                                       (snap["name"], mins))
+                elif mins is not None:
+                    dev_status_var.set("状态：○ %s 可能离线（心跳 %s 分钟前）" %
+                                       (snap["name"], mins))
+                else:
+                    dev_status_var.set("状态：未发现「%s」的联动心跳（请确认对方已启用联动）" % snap["name"])
+
+            for w in task_inner.winfo_children():
+                w.destroy()
+            groups = snap.get("groups", [])
+            if not groups:
+                ttk.Label(task_inner, text="该设备暂无任务组清单。\n（请对方开启联动并保存一次设置）",
+                          foreground='#888888', wraplength=250, justify=tk.LEFT).pack(anchor="w", pady=4)
+            else:
+                order = {"screenshot_group": 0, "group": 1, "mixed_group": 2, "script": 3}
+                for g in sorted(groups, key=lambda x: order.get(x.get("type", ""), 9)):
+                    gt = g.get("type", "")
+                    gn = g.get("name", "")
+                    gl = g.get("label", "任务")
+                    ttk.Button(task_inner, text="▸ %s：%s" % (gl, gn),
+                               command=lambda a=gt, b=gn, c=gl: on_run_group(a, b, c)).pack(
+                        fill=tk.X, pady=2)
+
+            for w in notify_inner.winfo_children():
+                w.destroy()
+            notices = snap.get("notifications", [])
+            if not notices:
+                ttk.Label(notify_inner, text="该设备暂无任务通知记录", foreground='#888888').pack(anchor="w", pady=4)
+            else:
+                for n in notices:
+                    is_fail = n.get("type") == _phone_link.MSG_TASK_FAILED
+                    icon = "✗" if is_fail else "✓"
+                    fgc = '#C00000' if is_fail else '#1E7B34'
+                    txt = "%s %s\n%s" % (icon, n.get("title", ""), n.get("content", ""))
+                    ttk.Label(notify_inner, text=txt, foreground=fgc, wraplength=250,
+                              justify=tk.LEFT).pack(anchor="w", pady=3)
+
+        def load_snapshot():
+            code = link.active_device_code
+            if not code:
+                dev_status_var.set("状态：请先添加设备（点「＋添加」）")
+                render_snapshot({"ok": False, "error": "请先添加设备"})
+                return
+            dev_status_var.set("状态：读取中…")
+
+            def worker():
+                snap = link.fetch_device_snapshot(code)
+                try:
+                    self.after(0, lambda: render_snapshot(snap))
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def do_refresh():
+            refresh_device_list()
+            load_snapshot()
+
+        ttk.Button(parent, text="↻ 刷新设备数据", command=do_refresh).grid(
+            row=4, column=0, columnspan=4, sticky="w", **pad)
+
+        refresh_device_list()
+        load_snapshot()
 
     def get_icon_path(self):
         """获取图标的绝对路径"""
