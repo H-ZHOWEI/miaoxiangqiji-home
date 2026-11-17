@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import urllib.request
+import random
 from pathlib import Path
 
 # 手机联动模块（电脑 <-> 手机 云端信箱双向通信）
@@ -33,7 +34,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -1131,6 +1132,14 @@ class ScreenshotClickEngine:
         self.max_skip_streak = 10
         self._skip_streak = 0      # 连续未命中轮数：用于自适应加滚的格数递增，只有分支命中才清零
         self._stop_streak = 0      # 自动停止计数：分支未命中 +1，滚动成功视为有进展会清零
+
+        # 拟人化输入（随机抖动）：默认全部关闭，开启后让点击位置/节奏更接近真人。
+        # 注意：仅改变输入表现，不读写游戏内存、不注入进程；不能保证绕过任何反作弊检测。
+        self.jitter_enabled = False
+        self.jitter_px = 2          # 点击位置随机偏移半径（像素）
+        self.jitter_delay_ms = 300  # 等待时间随机抖动幅度（±毫秒）
+        self.jitter_press_ms = 30   # 按下到松开的随机时长基准（毫秒）
+        self.jitter_move_steps = 0  # 鼠标分段移动步数（0 = 瞬间移动）
         
         # 截图数据保存在 exe（或脚本）旁边的 screenshot_click 文件夹，
         # 这样把整个软件文件夹拷到别的电脑时，创建的截图组会一起带走
@@ -1973,8 +1982,12 @@ class ScreenshotClickEngine:
         if anchor_y is None: anchor_y = height // 2
         click_x = int(left_x + anchor_x + task.get("offset_x", 0))
         click_y = int(top_y + anchor_y + task.get("offset_y", 0))
+        # 拟人化：在目标框内给点击位置加随机偏移（默认关闭）
+        jx, jy = self._jittered_point(anchor_x, anchor_y, width, height)
+        click_x = int(left_x + jx + task.get("offset_x", 0))
+        click_y = int(top_y + jy + task.get("offset_y", 0))
         wait_seconds = max(0.0, float(task.get("wait_seconds", 0.0)))
-        if wait_seconds and not self._interruptible_wait(wait_seconds):
+        if wait_seconds and not self._human_delay(wait_seconds):
             return False
         action = task.get("action", "左键单击")
         # 滚轮滚动：滚轮事件作用于鼠标所在位置，先移到屏幕中央再滚
@@ -2029,15 +2042,16 @@ class ScreenshotClickEngine:
             self._after_success(task)
             return True
         dpi = getattr(self.app, "dpi_scale", 1.0) or 1.0
-        self.app.player.mouse_controller.position = (int(click_x / dpi), int(click_y / dpi))
-        self._perform_mouse_action(action)
+        ctrl = self.app.player.mouse_controller
+        self._move_mouse_human(ctrl, int(click_x / dpi), int(click_y / dpi))
+        self._human_mouse_action(action)
         self.app.log_message(
             f"识别成功：{task.get('display_name', '截图')}，匹配度 {score:.3f}，坐标 ({click_x}, {click_y})")
         # 点击后校验：1 秒后复查，目标若仍在原位，说明点击没有生效
         #（常见原因：目标被悬浮输入栏/弹窗等遮挡，点击落在了遮挡层上）
         # 此时不计入命中次数，调用方也会把该位置标记为不可点击，避免空耗命中目标
         if task.get("verify_click") and action in ("左键单击", "左键双击", "右键单击", "右键双击", "中键单击"):
-            if not self._interruptible_wait(1.0):
+            if not self._human_delay(1.0):
                 return False
             again = self._find_on_screen(task)
             same_spot = (again is not None
@@ -2058,7 +2072,80 @@ class ScreenshotClickEngine:
         while self.running and time.time() < end_time:
             time.sleep(min(0.05, max(0.0, end_time - time.time())))
         return self.running
-    
+
+    # ---------- 拟人化输入（随机抖动）----------
+    def _human_delay(self, seconds):
+        """可中断的等待，开启抖动时在设定秒数上叠加一个随机扰动（绝不为负）。"""
+        base = max(0.0, float(seconds))
+        if getattr(self, "jitter_enabled", False) and base > 0:
+            amp = max(0, int(getattr(self, "jitter_delay_ms", 300))) / 1000.0
+            delta = random.uniform(-amp, amp)
+            base = max(0.01, base + delta)
+        return self._interruptible_wait(base)
+
+    def _jittered_point(self, x, y, width, height):
+        """在目标框内给点击点加随机偏移，偏移后被夹在图片范围内，避免点飞。"""
+        if not getattr(self, "jitter_enabled", False):
+            return x, y
+        px = max(0, int(getattr(self, "jitter_px", 2)))
+        if px <= 0:
+            return x, y
+        dx = random.randint(-px, px)
+        dy = random.randint(-px, px)
+        # 保证偏移后的点仍落在目标区域内
+        jx = x + dx
+        jy = y + dy
+        if width > 0:
+            jx = max(0, min(width - 1, jx))
+        if height > 0:
+            jy = max(0, min(height - 1, jy))
+        return jx, jy
+
+    def _move_mouse_human(self, ctrl, x, y):
+        """把鼠标移动到 (x, y)。开启抖动时分段移动并加微小抖动，模拟真人轨迹。"""
+        steps = 0
+        if getattr(self, "jitter_enabled", False):
+            steps = max(0, min(12, int(getattr(self, "jitter_move_steps", 0))))
+        if steps <= 0:
+            ctrl.position = (int(x), int(y))
+            return
+        try:
+            sx, sy = ctrl.position
+        except Exception:
+            sx, sy = x, y
+        for i in range(1, steps + 1):
+            if not self.running:
+                break
+            t = i / float(steps)
+            nx = sx + (x - sx) * t
+            ny = sy + (y - sy) * t
+            ctrl.position = (int(nx), int(ny))
+            time.sleep(random.uniform(0.015, 0.045))
+        ctrl.position = (int(x), int(y))
+
+    def _human_mouse_action(self, action):
+        """拟人化点击：按下到松开之间加一个随机短暂停顿。非点击类沿用原逻辑。"""
+        if not getattr(self, "jitter_enabled", False):
+            return self._perform_mouse_action(action)
+        click_map = {
+            "左键单击": mouse.Button.left, "左键双击": mouse.Button.left,
+            "右键单击": mouse.Button.right, "右键双击": mouse.Button.right,
+            "中键单击": mouse.Button.middle,
+        }
+        if action not in click_map:
+            return self._perform_mouse_action(action)
+        controller = self.app.player.mouse_controller
+        btn = click_map[action]
+        times = 2 if "双击" in action else 1
+        base_ms = max(0, int(getattr(self, "jitter_press_ms", 30)))
+        for n in range(times):
+            controller.press(btn)
+            if base_ms > 0:
+                time.sleep(random.uniform(base_ms * 0.0005, base_ms * 0.0015))
+            controller.release(btn)
+            if n < times - 1:
+                time.sleep(random.uniform(0.04, 0.10))
+
     def _perform_mouse_action(self, action):
         controller = self.app.player.mouse_controller
         actions = {
@@ -2093,7 +2180,7 @@ class ScreenshotClickEngine:
             if text and not self._type_text(text):
                 return False
             if task.get("key_enter_after"):
-                time.sleep(0.08)
+                self._human_delay(0.08)
                 try:
                     controller.press(Key.enter)
                     controller.release(Key.enter)
@@ -2125,7 +2212,7 @@ class ScreenshotClickEngine:
                 self.app.log_message(f"键盘按键执行失败（{combo}）：{str(e)}")
                 return False
             if step_index < len(steps) - 1:
-                time.sleep(0.15)
+                self._human_delay(0.15)
         return True
     
     def _type_text(self, text):
@@ -3590,6 +3677,7 @@ class AutomationApp(tk.Tk):
         self.screenshot_engine = ScreenshotClickEngine(self)
         self.screenshot_engine.step_timeout_seconds = self.screenshot_step_timeout_minutes * 60
         self.screenshot_engine.max_skip_streak = max(0, int(self.app_settings.get("screenshot_max_skip_streak", 10) or 0))
+        self._apply_jitter_to_engine()
         
         self.current_queue = []
         self.setup_ui()
@@ -6837,6 +6925,17 @@ class AutomationApp(tk.Tk):
             value=int(round(self.screenshot_step_timeout_minutes)))
         self.screenshot_skip_streak_var = tk.IntVar(
             value=max(0, int(self.app_settings.get("screenshot_max_skip_streak", 10) or 0)))
+        # 拟人化输入（随机抖动）设置变量
+        self.jitter_enabled_var = tk.BooleanVar(
+            value=bool(self.app_settings.get("jitter_enabled", False)))
+        self.jitter_px_var = tk.IntVar(
+            value=max(0, min(20, int(self.app_settings.get("jitter_px", 2) or 0))))
+        self.jitter_delay_var = tk.IntVar(
+            value=max(0, min(3000, int(self.app_settings.get("jitter_delay_ms", 300) or 0))))
+        self.jitter_press_var = tk.IntVar(
+            value=max(0, min(500, int(self.app_settings.get("jitter_press_ms", 30) or 0))))
+        self.jitter_move_var = tk.IntVar(
+            value=max(0, min(12, int(self.app_settings.get("jitter_move_steps", 0) or 0))))
         
         # ---------- 根容器（网格：顶栏 / 主体 / 日志 / 底部控制） ----------
         root = ttk.Frame(self, padding=(10, 8, 10, 6))
@@ -7167,7 +7266,7 @@ class AutomationApp(tk.Tk):
         
         dialog = tk.Toplevel(self)
         dialog.title("截图识别高级设置")
-        dialog.geometry("620x470")
+        dialog.geometry("620x660")
         dialog.transient(self)
         self._set_window_icon(dialog)
         self.screenshot_advanced_dialog = dialog
@@ -7222,6 +7321,39 @@ class AutomationApp(tk.Tk):
                     textvariable=self.screenshot_skip_streak_var).pack(side=tk.LEFT, padx=4)
         ttk.Label(srow, text="个分支节点超时未命中则自动停止（0 = 关闭；配合命中目标可实现“点够 N 个就停”）").pack(side=tk.LEFT)
         ttk.Button(srow, text="保存", command=self._apply_skip_streak_from_ui).pack(side=tk.LEFT, padx=8)
+
+        # 拟人化输入（随机抖动）
+        jitter_frame = ttk.LabelFrame(dialog, text="拟人化输入（随机抖动，默认关闭）", padding=10)
+        jitter_frame.pack(fill=tk.X, padx=12, pady=6)
+        j0 = ttk.Frame(jitter_frame)
+        j0.pack(fill=tk.X)
+        ttk.Checkbutton(j0, text="启用随机抖动",
+                        variable=self.jitter_enabled_var).pack(side=tk.LEFT)
+        j1 = ttk.Frame(jitter_frame)
+        j1.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(j1, text="点击位置偏移 ±").pack(side=tk.LEFT)
+        ttk.Spinbox(j1, from_=0, to=20, width=5,
+                    textvariable=self.jitter_px_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(j1, text="像素").pack(side=tk.LEFT)
+        ttk.Label(j1, text="  等待抖动 ±").pack(side=tk.LEFT)
+        ttk.Spinbox(j1, from_=0, to=3000, width=7,
+                    textvariable=self.jitter_delay_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(j1, text="毫秒").pack(side=tk.LEFT)
+        j2 = ttk.Frame(jitter_frame)
+        j2.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(j2, text="按压缩放基准 ").pack(side=tk.LEFT)
+        ttk.Spinbox(j2, from_=0, to=500, width=6,
+                    textvariable=self.jitter_press_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(j2, text="毫秒  鼠标分段 ").pack(side=tk.LEFT)
+        ttk.Spinbox(j2, from_=0, to=12, width=5,
+                    textvariable=self.jitter_move_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(j2, text="步（0=不分段）").pack(side=tk.LEFT)
+        ttk.Label(jitter_frame,
+                  text="开启后：点击位置在目标内小幅随机、每次等待带随机快慢、鼠标可分段移动，\n"
+                       "让操作节奏更接近真人。仅改变输入表现，不读取游戏数据；不能保证绕过任何反作弊检测。",
+                  foreground="gray", justify=tk.LEFT).pack(anchor="w", pady=(6, 0))
+        ttk.Button(jitter_frame, text="保存拟人化设置",
+                   command=self._apply_jitter_from_ui).pack(anchor="w", pady=(8, 0))
 
         ttk.Button(dialog, text="关闭", command=dialog.destroy).pack(pady=12)
     def show_group_notice_dialog(self, group_name, notice):
@@ -8688,7 +8820,43 @@ class AutomationApp(tk.Tk):
             self.log_message("已关闭“连续未命中自动停止”")
         else:
             self.log_message(f"连续 {value} 个分支节点超时未命中将自动停止")
-    
+
+    def _apply_jitter_to_engine(self):
+        """把持久化的抖动设置写入截图引擎（启动时调用）。"""
+        try:
+            eng = self.screenshot_engine
+            eng.jitter_enabled = bool(self.app_settings.get("jitter_enabled", False))
+            eng.jitter_px = max(0, min(20, int(self.app_settings.get("jitter_px", 2) or 0)))
+            eng.jitter_delay_ms = max(0, min(3000, int(self.app_settings.get("jitter_delay_ms", 300) or 0)))
+            eng.jitter_press_ms = max(0, min(500, int(self.app_settings.get("jitter_press_ms", 30) or 0)))
+            eng.jitter_move_steps = max(0, min(12, int(self.app_settings.get("jitter_move_steps", 0) or 0)))
+        except Exception:
+            pass
+
+    def _apply_jitter_from_ui(self):
+        """保存高级设置里的拟人化输入参数。"""
+        try:
+            enabled = bool(self.jitter_enabled_var.get())
+            px = max(0, min(20, int(self.jitter_px_var.get())))
+            delay = max(0, min(3000, int(self.jitter_delay_var.get())))
+            press = max(0, min(500, int(self.jitter_press_var.get())))
+            steps = max(0, min(12, int(self.jitter_move_var.get())))
+        except Exception:
+            self.log_message("拟人化输入参数无效，已忽略")
+            return
+        self.app_settings["jitter_enabled"] = enabled
+        self.app_settings["jitter_px"] = px
+        self.app_settings["jitter_delay_ms"] = delay
+        self.app_settings["jitter_press_ms"] = press
+        self.app_settings["jitter_move_steps"] = steps
+        save_app_settings(self.app_settings)
+        self._apply_jitter_to_engine()
+        if enabled:
+            self.log_message(
+                f"拟人化输入已启用：位置±{px}px、等待±{delay}ms、按压基准{press}ms、鼠标分段{steps}步")
+        else:
+            self.log_message("拟人化输入已关闭（输入恢复为精确、固定节奏）")
+
     def set_scheduler_countdown(self, value):
         """设置定时任务触发前的默认倒计时秒数（0 = 不提示）。"""
         try:
