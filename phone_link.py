@@ -51,6 +51,8 @@ SETTING_POLL_SEC = "phone_link_poll_sec"
 # v1.4.0 新增：电脑端作为「控制端」的设备列表（对端电脑的配对码）
 SETTING_DEVICES = "phone_link_devices"              # JSON: [{"code": "...", "name": "..."}]
 SETTING_ACTIVE_DEVICE = "phone_link_active_device"  # 当前查看/遥控的设备配对码
+# v1.6.0 新增：本机名称（遥控别的电脑时，让对方知道"谁控制的"）
+SETTING_LOCAL_NAME = "phone_link_local_name"
 
 
 def _headers():
@@ -184,6 +186,8 @@ class PhoneLink:
         self._last_error = ""
         self._online = False
         self._last_group_sync = 0.0
+        # 最近一条遥控指令的来源（"谁控制了我"），随本次任务通知上报，完成后清空
+        self._last_command_source = None
 
     # ------------------------------------------------------------------ 配置
     @property
@@ -238,6 +242,12 @@ class PhoneLink:
         self.settings[SETTING_PAIR_CODE] = str(code or "").strip().upper()
         self.save_settings()
         self.refresh_mailbox()
+
+    @property
+    def local_name(self):
+        """本机名称：遥控别的电脑时告诉对方"是谁在下指令"。"""
+        name = str(self.settings.get(SETTING_LOCAL_NAME, "") or "").strip()
+        return name or "未命名设备"
         self._handled_ids.clear()
         self._last_group_sync = 0.0  # 换码后立即同步组清单
 
@@ -334,11 +344,19 @@ class PhoneLink:
             "failed": MSG_TASK_FAILED,
             "stop": MSG_TASK_STOP,
         }
+        payload = {"status": status, "label": label}
+        # "谁控制了我"：若本次任务是收到遥控指令才跑的，把来源一并上报，
+        # 让控制端在其通知里能看到「控制方 → 被控方」。
+        if self._last_command_source and status in ("start", "done", "failed", "stop"):
+            payload["controlled_by"] = self._last_command_source
         self.notify(mapping.get(status, MSG_TASK_DONE),
                     "任务" + {"start": "开始", "done": "完成",
                               "failed": "失败", "stop": "已停止"}.get(status, "更新"),
                     "%s%s" % (label, ("\n" + detail) if detail else ""),
-                    {"status": status, "label": label})
+                    payload)
+        # 任务终结后清掉来源，避免下一次本地任务误带上一次的遥控方
+        if status in ("done", "failed", "stop"):
+            self._last_command_source = None
 
     # ------------------------------------------------------------------ 主循环
     def _run(self):
@@ -412,6 +430,17 @@ class PhoneLink:
             self._safe_notify(MSG_ACK, "指令未执行",
                               "电脑正在执行其他任务，请稍后重试")
             return
+
+        # 记住"谁控制了我"：payload 里可能来自手机或另一台电脑。
+        # 手机端老版本不带该字段，就按「手机」兜底。
+        src = data.get("controlled_by")
+        if not isinstance(src, dict):
+            src = {}
+        src_name = str(src.get("name") or "").strip()
+        self._last_command_source = {
+            "name": src_name or "手机",
+            "type": str(src.get("type") or "phone"),
+        }
 
         # 构造队列项并交给 UI 线程执行
         item = {"type": target_type, "name": target_name}
@@ -609,12 +638,24 @@ class PhoneLink:
             ok, rows = box.get_latest(DIR_PC2PHONE, mt, 8)
             if ok:
                 for r in (rows or []):
+                    # 解析 payload 里的「谁控制了我」，供 UI 显示 控制方 → 被控方
+                    controlled_by = None
+                    try:
+                        payload = r.get("payload") or "{}"
+                        data = json.loads(payload) if isinstance(payload, str) else payload
+                        if isinstance(data, dict):
+                            src = data.get("controlled_by")
+                            if isinstance(src, dict):
+                                controlled_by = src
+                    except Exception:
+                        pass
                     notices.append({
                         "id": r.get("id"),
                         "type": mt,
                         "title": r.get("title", ""),
                         "content": r.get("content", ""),
                         "created_at": r.get("created_at", ""),
+                        "controlled_by": controlled_by,
                     })
         notices.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
         result["notifications"] = notices[:12]
@@ -626,7 +667,12 @@ class PhoneLink:
         code = str(code or "").strip().upper()
         if not code:
             return False, "未选择设备"
-        payload = {"target_type": target_type, "target_name": target_name}
+        payload = {
+            "target_type": target_type,
+            "target_name": target_name,
+            # 让对方知道是谁下发的指令，写进它的任务通知
+            "controlled_by": {"name": self.local_name, "type": "pc"},
+        }
         box = CloudMailbox(code)
         ok, resp = box.send(DIR_PHONE2PC, MSG_COMMAND, "执行任务", target_name, payload)
         return bool(ok), ("" if ok else str(resp))

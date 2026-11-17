@@ -35,7 +35,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -74,6 +74,21 @@ def _app_portable_base():
         return Path(__file__).resolve().parent
     except Exception:
         return Path.cwd()
+
+
+def _format_cloud_time(value):
+    """把云端 ISO 时间戳（UTC）转成本地时间「MM-DD HH:MM」，失败原样截断。"""
+    if not value:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        s = str(value).replace("Z", "+00:00")
+        t = _dt.fromisoformat(s)
+        if t.tzinfo is not None:
+            t = t.astimezone()
+        return t.strftime("%m-%d %H:%M")
+    except Exception:
+        return str(value)[:16]
 
 
 def _clean_child_env_for_relaunch():
@@ -3813,7 +3828,18 @@ class AutomationApp(tk.Tk):
         dlg.title("联动设置")
         dlg.transient(self)
         dlg.resizable(True, True)
-        dlg.geometry("640x560")
+        # 大窗口：设备页有「任务组 + 通知」双栏，小窗口下脚本名/通知被挤成
+        # 两三行还要手动拉大。按屏幕自适应给足初始空间（Win7 1366x768 也能放下）。
+        try:
+            sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+            win_w = min(1180, max(880, sw - 120))
+            win_h = min(840, max(640, sh - 120))
+            dlg.geometry("%dx%d" % (win_w, win_h))
+            dlg.geometry("+%d+%d" % (max(0, (sw - win_w) // 2),
+                                     max(0, (sh - win_h) // 2 - 20)))
+        except Exception:
+            dlg.geometry("1080x760")
+        dlg.minsize(880, 620)
         dlg.columnconfigure(0, weight=1)
         dlg.rowconfigure(1, weight=1)
 
@@ -3833,6 +3859,7 @@ class AutomationApp(tk.Tk):
         pad = {"padx": 8, "pady": 6}
         enabled_var = tk.BooleanVar(value=bool(self.app_settings.get(_phone_link.SETTING_ENABLED)))
         pair_var = tk.StringVar(value=self.app_settings.get(_phone_link.SETTING_PAIR_CODE, ""))
+        name_var = tk.StringVar(value=link.local_name if link.local_name != "未命名设备" else "")
         status_var = tk.StringVar(value=link.status_text())
 
         ttk.Checkbutton(page_local, text="启用联动（允许手机/其他电脑控制本机、并上报本机任务通知）",
@@ -3842,9 +3869,14 @@ class AutomationApp(tk.Tk):
         pair_entry.grid(row=1, column=1, sticky="ew", **pad)
         ttk.Button(page_local, text="生成新配对码",
                    command=lambda: pair_var.set(_phone_link.new_pair_code())).grid(row=1, column=2, **pad)
-        ttk.Label(page_local, text="状态：").grid(row=2, column=0, sticky="e", **pad)
+        ttk.Label(page_local, text="本机名称：").grid(row=2, column=0, sticky="e", **pad)
+        ttk.Entry(page_local, textvariable=name_var, width=24).grid(
+            row=2, column=1, columnspan=2, sticky="ew", **pad)
+        ttk.Label(page_local, text="（遥控别的电脑时，对方通知里会显示这个名字）",
+                  foreground='#888888').grid(row=3, column=1, columnspan=2, sticky="w", padx=8)
+        ttk.Label(page_local, text="状态：").grid(row=4, column=0, sticky="e", **pad)
         ttk.Label(page_local, textvariable=status_var, foreground='#0078d4').grid(
-            row=2, column=1, columnspan=2, sticky="w", **pad)
+            row=4, column=1, columnspan=2, sticky="w", **pad)
 
         tip = ("使用步骤：\n"
                "1. 点「生成新配对码」，记住这串码（如 AB3D7K9M）；\n"
@@ -3853,10 +3885,10 @@ class AutomationApp(tk.Tk):
                "4. 本机任务完成/失败会自动通知对端；对端点任务组可远程让本机执行。\n"
                "提示：配对码就是钥匙，不要告诉别人。")
         ttk.Label(page_local, text=tip, justify=tk.LEFT, foreground='#555555').grid(
-            row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 8))
+            row=5, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 8))
 
         local_btn = ttk.Frame(page_local)
-        local_btn.grid(row=4, column=0, columnspan=3, sticky="e", padx=8, pady=(0, 8))
+        local_btn.grid(row=6, column=0, columnspan=3, sticky="e", padx=8, pady=(0, 8))
 
         def do_save_local():
             code = pair_var.get().strip().upper()
@@ -3865,6 +3897,8 @@ class AutomationApp(tk.Tk):
                 return
             link.set_enabled(enabled_var.get())
             link.set_pair_code(code)
+            self.app_settings[_phone_link.SETTING_LOCAL_NAME] = name_var.get().strip()
+            self.save_phone_link_settings()
             if enabled_var.get():
                 link.sync_group_list()
             status_var.set(link.status_text())
@@ -3897,7 +3931,7 @@ class AutomationApp(tk.Tk):
         pad = {"padx": 8, "pady": 5}
 
         ttk.Label(parent, text="添加其他电脑的配对码，即可在这里查看它的任务组并远程遥控它执行。",
-                  foreground='#555555', wraplength=600, justify=tk.LEFT).grid(
+                  foreground='#555555', wraplength=900, justify=tk.LEFT).grid(
             row=0, column=0, columnspan=4, sticky="w", **pad)
 
         dev_var = tk.StringVar()
@@ -4007,7 +4041,7 @@ class AutomationApp(tk.Tk):
                   font=('微软雅黑', 9, 'bold')).pack(anchor="w", pady=(2, 4))
         task_canvas_frame = ttk.Frame(left)
         task_canvas_frame.pack(fill=tk.BOTH, expand=True)
-        task_canvas = tk.Canvas(task_canvas_frame, height=220, highlightthickness=0)
+        task_canvas = tk.Canvas(task_canvas_frame, height=300, highlightthickness=0)
         task_scroll = ttk.Scrollbar(task_canvas_frame, orient=tk.VERTICAL, command=task_canvas.yview)
         task_canvas.configure(yscrollcommand=task_scroll.set)
         task_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -4020,7 +4054,7 @@ class AutomationApp(tk.Tk):
                   font=('微软雅黑', 9, 'bold')).pack(anchor="w", pady=(2, 4))
         notify_canvas_frame = ttk.Frame(right)
         notify_canvas_frame.pack(fill=tk.BOTH, expand=True)
-        notify_canvas = tk.Canvas(notify_canvas_frame, height=220, highlightthickness=0)
+        notify_canvas = tk.Canvas(notify_canvas_frame, height=300, highlightthickness=0)
         notify_scroll = ttk.Scrollbar(notify_canvas_frame, orient=tk.VERTICAL, command=notify_canvas.yview)
         notify_canvas.configure(yscrollcommand=notify_scroll.set)
         notify_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -4084,12 +4118,24 @@ class AutomationApp(tk.Tk):
             if not notices:
                 ttk.Label(notify_inner, text="该设备暂无任务通知记录", foreground='#888888').pack(anchor="w", pady=4)
             else:
+                target_name = snap.get("name", "该设备")
                 for n in notices:
                     is_fail = n.get("type") == _phone_link.MSG_TASK_FAILED
                     icon = "✗" if is_fail else "✓"
                     fgc = '#C00000' if is_fail else '#1E7B34'
-                    txt = "%s %s\n%s" % (icon, n.get("title", ""), n.get("content", ""))
-                    ttk.Label(notify_inner, text=txt, foreground=fgc, wraplength=250,
+                    # 时间：明确知道通知是何时发生的
+                    time_s = _format_cloud_time(n.get("created_at", ""))
+                    # 谁控制谁：被控端上报任务时带了 controlled_by 就显示
+                    # 「控制方 → 目标设备」，否则说明是本机自己跑的。
+                    src = n.get("controlled_by") or {}
+                    src_name = str(src.get("name") or "").strip()
+                    if src_name:
+                        route = "%s → %s" % (src_name, target_name)
+                    else:
+                        route = "%s（本机执行）" % target_name
+                    head = "%s %s  %s" % (icon, time_s, route)
+                    txt = "%s\n%s：%s" % (head, n.get("title", ""), n.get("content", ""))
+                    ttk.Label(notify_inner, text=txt, foreground=fgc, wraplength=440,
                               justify=tk.LEFT).pack(anchor="w", pady=3)
 
         def load_snapshot():
