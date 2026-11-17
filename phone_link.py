@@ -39,8 +39,15 @@ MSG_TASK_DONE = "task_done"       # 任务正常完成
 MSG_TASK_FAILED = "task_failed"   # 任务失败/异常
 MSG_TASK_START = "task_start"     # 任务开始
 MSG_TASK_STOP = "task_stop"       # 任务被手动停止
-MSG_COMMAND = "command"           # 手机下发的执行指令
+MSG_COMMAND = "command"           # 手机下发的执行指令（执行任务 / 暂停 / 继续 / 停止）
 MSG_ACK = "ack"                   # 电脑对指令的回执
+
+# 指令动作：payload 里 action 字段区分。缺省为 "run"（老版本下发的执行指令）
+CMD_ACTION_RUN = "run"
+CMD_ACTION_PAUSE = "pause"
+CMD_ACTION_RESUME = "resume"
+CMD_ACTION_STOP = "stop"
+VALID_CONTROL_ACTIONS = (CMD_ACTION_PAUSE, CMD_ACTION_RESUME, CMD_ACTION_STOP)
 MSG_HEARTBEAT = "heartbeat"       # 电脑在线心跳
 MSG_GROUP_LIST = "group_list"     # 电脑上报的可执行任务组清单（手机据此展示）
 
@@ -415,21 +422,8 @@ class PhoneLink:
                 self._safe_mark_read(mid)
 
     def _on_command(self, msg_id, data, content):
-        """收到手机下发的执行指令。"""
-        target_type = str(data.get("target_type") or "").strip()
-        target_name = str(data.get("target_name") or "").strip()
-        if not target_name:
-            target_name = str(content or "").strip()
+        """收到手机/其他电脑下发的指令：执行任务，或暂停/继续/停止控制。"""
         self._safe_mark_read(msg_id)
-        if not target_type or not target_name:
-            self._safe_notify(MSG_ACK, "指令无效", "缺少任务组类型或名称")
-            return
-
-        # 忙时不打断当前任务
-        if self._is_busy():
-            self._safe_notify(MSG_ACK, "指令未执行",
-                              "电脑正在执行其他任务，请稍后重试")
-            return
 
         # 记住"谁控制了我"：payload 里可能来自手机或另一台电脑。
         # 手机端老版本不带该字段，就按「手机」兜底。
@@ -442,6 +436,27 @@ class PhoneLink:
             "type": str(src.get("type") or "phone"),
         }
 
+        action = str(data.get("action") or CMD_ACTION_RUN).strip().lower()
+        # ---- 控制类指令（暂停/继续/停止）：忙时也必须生效，单独分流 ----
+        if action in VALID_CONTROL_ACTIONS:
+            self._on_control_action(action)
+            return
+
+        # ---- 执行任务类指令 ----
+        target_type = str(data.get("target_type") or "").strip()
+        target_name = str(data.get("target_name") or "").strip()
+        if not target_name:
+            target_name = str(content or "").strip()
+        if not target_type or not target_name:
+            self._safe_notify(MSG_ACK, "指令无效", "缺少任务组类型或名称")
+            return
+
+        # 忙时不打断当前任务
+        if self._is_busy():
+            self._safe_notify(MSG_ACK, "指令未执行",
+                              "电脑正在执行其他任务，请稍后重试")
+            return
+
         # 构造队列项并交给 UI 线程执行
         item = {"type": target_type, "name": target_name}
         if target_type == "screenshot_task":
@@ -452,6 +467,94 @@ class PhoneLink:
                 item["task_index"] = 0
             item["display"] = data.get("display", target_name)
         self.app.after(0, lambda it=item: self._execute_command_on_ui(it))
+
+    def _on_control_action(self, action):
+        """处理暂停/继续/停止控制指令（忙时也生效，在 UI 线程执行）。"""
+        busy = self._is_busy()
+        labels = {CMD_ACTION_PAUSE: "暂停", CMD_ACTION_RESUME: "继续", CMD_ACTION_STOP: "停止"}
+
+        if action == CMD_ACTION_PAUSE and not busy:
+            self._safe_notify(MSG_ACK, "无需暂停", "电脑当前没有正在运行的任务")
+            return
+        if action == CMD_ACTION_RESUME:
+            # 继续：无论是否为截图流程，都尝试恢复
+            self.app.after(0, self._apply_resume)
+            return
+        if action == CMD_ACTION_STOP and not busy:
+            self._safe_notify(MSG_ACK, "无需停止", "电脑当前没有正在运行的任务")
+            return
+
+        self.app.after(0, lambda a=action: self._apply_control(a))
+
+    def _apply_resume(self):
+        """UI 线程：尝试恢复截图流程或队列播放。"""
+        done = False
+        try:
+            eng = self.app.screenshot_engine
+            if getattr(eng, "running", False) and getattr(eng, "paused", False):
+                eng.resume()
+                done = True
+        except Exception:
+            pass
+        try:
+            if not done and getattr(self.app, "queue_paused", False):
+                self.app.safe_resume_execution()
+                done = True
+        except Exception:
+            pass
+        try:
+            if not done and getattr(self.app.player, "paused", False):
+                self.app.safe_resume_execution()
+                done = True
+        except Exception:
+            pass
+        self._safe_notify(MSG_ACK, "继续指令已执行",
+                          "已通知电脑继续执行" if done else "电脑当前没有暂停中的任务")
+
+    def _apply_control(self, action):
+        """UI 线程：执行暂停/停止。"""
+        label = {CMD_ACTION_PAUSE: "暂停", CMD_ACTION_STOP: "停止"}.get(action, action)
+        try:
+            if action == CMD_ACTION_PAUSE:
+                # 截图流程优先，其次队列/按键播放器
+                eng = self.app.screenshot_engine
+                if getattr(eng, "running", False):
+                    eng.pause()
+                    self._safe_notify(MSG_ACK, "暂停指令已执行", "截图流程已暂停")
+                    return
+                if getattr(self.app.player, "is_playing", False):
+                    self.app.safe_pause_execution()
+                    self._safe_notify(MSG_ACK, "暂停指令已执行", "按键脚本已暂停")
+                    return
+                self._safe_notify(MSG_ACK, "无需暂停", "电脑当前没有正在运行的任务")
+                return
+
+            if action == CMD_ACTION_STOP:
+                # 停止：同时停截图流程与按键脚本
+                eng = self.app.screenshot_engine
+                was_running = False
+                try:
+                    was_running = getattr(eng, "running", False) or getattr(self.app.player, "is_playing", False)
+                except Exception:
+                    pass
+                try:
+                    if getattr(eng, "running", False):
+                        eng.stop()
+                except Exception as e:
+                    self._safe_log("停止截图流程失败：%s" % e)
+                try:
+                    self.app.stop_execution()
+                except Exception as e:
+                    self._safe_log("停止脚本失败：%s" % e)
+                self._safe_notify(MSG_ACK, "停止指令已执行",
+                                  "已通知电脑停止当前任务" if was_running else "电脑当前没有运行中的任务")
+                # 同步发一条任务停止通知，让控制端看到"已停止"
+                if was_running:
+                    self.notify_task("stop", self._busy_label_now() or "任务", "远程停止")
+                return
+        except Exception as e:
+            self._safe_notify(MSG_ACK, "指令执行失败", "%s：%s" % (label, e))
+            self._safe_log("控制指令执行出错：%s" % e)
 
     def _execute_command_on_ui(self, item):
         """在 UI 线程把指令项入队并启动执行。"""

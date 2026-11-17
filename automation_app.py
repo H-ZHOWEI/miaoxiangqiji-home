@@ -35,7 +35,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -89,6 +89,39 @@ def _format_cloud_time(value):
         return t.strftime("%m-%d %H:%M")
     except Exception:
         return str(value)[:16]
+
+
+def _center_window(win, parent=None, w=None, h=None):
+    """把 Toplevel 窗口居中到「父窗口」中央（父窗口通常最大化=铺满屏幕）。
+    调用时机：geometry("宽x高") 之后；会从当前 geometry 解析尺寸，也可用 w/h 覆盖。
+    """
+    try:
+        win.update_idletasks()
+        geo = win.geometry()
+        # geo 形如 "780x560+100+80"
+        size_part = geo.split('+')[0].split('-')[0]
+        cur_w, cur_h = [int(v) for v in size_part.split('x')[:2]]
+        width = int(w) if w is not None else cur_w
+        height = int(h) if h is not None else cur_h
+        # 优先相对父窗口居中；否则相对屏幕
+        if parent is not None:
+            try:
+                px, py = parent.winfo_rootx(), parent.winfo_rooty()
+                pw, ph = parent.winfo_width(), parent.winfo_height()
+            except Exception:
+                px = py = pw = ph = 0
+        else:
+            px = py = pw = ph = 0
+        if pw <= 1 or ph <= 1:
+            pw, ph = win.winfo_screenwidth(), win.winfo_screenheight()
+            px = py = 0
+        x = px + (pw - width) // 2
+        y = py + (ph - height) // 2
+        x = max(0, min(x, win.winfo_screenwidth() - width))
+        y = max(0, min(y, win.winfo_screenheight() - height))
+        win.geometry("%dx%d+%d+%d" % (width, height, x, y))
+    except Exception:
+        pass
 
 
 def _clean_child_env_for_relaunch():
@@ -1197,6 +1230,10 @@ class ScreenshotClickEngine:
         self.jitter_delay_ms = 300  # 等待时间随机抖动幅度（±毫秒）
         self.jitter_press_ms = 30   # 按下到松开的随机时长基准（毫秒）
         self.jitter_move_steps = 0  # 鼠标分段移动步数（0 = 瞬间移动）
+
+        # 暂停/继续（供手机/其他电脑远程控制）：暂停时冻结截图流程，停止时能唤醒。
+        self.paused = False
+        self.pause_condition = threading.Condition()
         
         # 截图数据保存在 exe（或脚本）旁边的 screenshot_click 文件夹，
         # 这样把整个软件文件夹拷到别的电脑时，创建的截图组会一起带走
@@ -1676,11 +1713,45 @@ class ScreenshotClickEngine:
     def stop(self, log=True):
         was_running = self.running
         self.running = False
+        self.paused = False
+        with self.pause_condition:
+            self.pause_condition.notify_all()   # 暂停中也能被停止唤醒
         self.stop_reason = ""
         if log and was_running:
             self.app.log_message("截图流程已停止")
         self.app.after(0, lambda: self.app.update_screenshot_mode_status("已停止"))
-    
+
+    def pause(self):
+        """远程暂停：冻结当前流程（在下一个等待点生效，不会打断已发出的点击）。"""
+        if self.running:
+            with self.pause_condition:
+                self.paused = True
+            self.app.log_message("截图流程已暂停（远程）")
+            try:
+                self.app.after(0, lambda: self.app.update_screenshot_mode_status("已暂停"))
+            except Exception:
+                pass
+            return True
+        return False
+
+    def resume(self):
+        """远程继续：解除暂停并唤醒等待线程。"""
+        with self.pause_condition:
+            self.paused = False
+            self.pause_condition.notify_all()
+        self.app.log_message("截图流程已继续（远程）")
+        try:
+            self.app.after(0, lambda: self.app.update_screenshot_mode_status("识别中..."))
+        except Exception:
+            pass
+
+    def _wait_if_paused(self):
+        """若处于暂停状态则阻塞等待，直到 resume 或 stop。返回 False 表示已被停止。"""
+        with self.pause_condition:
+            while self.paused and self.running:
+                self.pause_condition.wait(0.2)
+        return self.running
+
     def trigger_restart(self):
         """按键触发：立刻中断当前执行，并让当前截图组从第一个任务重新开始。"""
         threading.Thread(target=self._trigger_restart_worker, daemon=True).start()
@@ -2125,8 +2196,16 @@ class ScreenshotClickEngine:
         return True
     
     def _interruptible_wait(self, seconds):
+        if not self._wait_if_paused():   # 暂停期间冻结，stop 可唤醒
+            return False
         end_time = time.time() + max(0.0, float(seconds))
         while self.running and time.time() < end_time:
+            # 等待期间若被暂停，暂停时间不计入等待（暂停结束后重新计时剩余部分）
+            if self.paused:
+                if not self._wait_if_paused():
+                    return False
+                end_time = time.time() + max(0.0, float(seconds))
+                continue
             time.sleep(min(0.05, max(0.0, end_time - time.time())))
         return self.running
 
@@ -3351,6 +3430,7 @@ class TaskManagementDialog(tk.Toplevel):
         self.scheduler = scheduler
         self.title("定时任务管理")
         self.geometry("780x560")
+        _center_window(self, self.parent)
         self.minsize(620, 460)
         self._set_window_icon(self)  # 为自己设置图标
         self.setup_ui()
@@ -3455,6 +3535,7 @@ class TaskManagementDialog(tk.Toplevel):
         dialog = tk.Toplevel(self)
         dialog.title("添加定时任务")
         dialog.geometry("430x590")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         self._set_window_icon(dialog)  # 修正：现在可以传参了
@@ -4243,6 +4324,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("新建混合组")
         dialog.geometry("700x600")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         self._set_window_icon(dialog)
@@ -4469,6 +4551,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("编辑混合组")
         dialog.geometry("700x600")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         self._set_window_icon(dialog)
@@ -4882,6 +4965,7 @@ class AutomationApp(tk.Tk):
         win_w = min(940, max(760, screen_w - 80))
         win_h = min(980, max(700, screen_h - 120))
         dialog.geometry(f"{win_w}x{win_h}")
+        _center_window(dialog, self)
         dialog.minsize(min(720, win_w), min(620, win_h))
         dialog.transient(self)
         dialog.grab_set()
@@ -5259,6 +5343,7 @@ class AutomationApp(tk.Tk):
         except Exception:
             screen_h, screen_w = 1080, 1920
         dialog.geometry(f"{min(1200, max(800, screen_w - 80))}x{min(750, max(600, screen_h - 140))}")
+        _center_window(dialog, self)
         dialog.minsize(800, 560)
         dialog.transient(self)
         dialog.grab_set()
@@ -5549,6 +5634,7 @@ class AutomationApp(tk.Tk):
         except Exception:
             screen_h = 1080
         dialog.geometry(f"860x{min(700, max(560, screen_h - 160))}")
+        _center_window(dialog, self)
         dialog.minsize(700, 520)
         dialog.transient(self)
         dialog.grab_set()
@@ -5878,6 +5964,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(parent)
         dialog.title("步骤设置")
         dialog.geometry("350x200")
+        _center_window(dialog, parent)
         dialog.transient(parent)
         dialog.grab_set()
         self._set_window_icon(dialog)
@@ -5935,6 +6022,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("创建脚本组")
         dialog.geometry("520x560")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         self._set_window_icon(dialog)
@@ -6093,6 +6181,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("编辑脚本组")
         dialog.geometry("520x560")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         self._set_window_icon(dialog)
@@ -6247,6 +6336,7 @@ class AutomationApp(tk.Tk):
         self._set_window_icon(dialog)
         dialog.title(f"执行脚本前提醒 - {script_name}")
         dialog.geometry("480x340")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         dialog.attributes('-topmost', True)
@@ -7315,6 +7405,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("脚本组 / 混合组管理")
         dialog.geometry("560x330")
+        _center_window(dialog, self)
         dialog.resizable(False, False)
         dialog.transient(self)
         self._set_window_icon(dialog)
@@ -7361,6 +7452,7 @@ class AutomationApp(tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title("截图识别高级设置")
         dialog.geometry("620x660")
+        _center_window(dialog, self)
         dialog.transient(self)
         self._set_window_icon(dialog)
         self.screenshot_advanced_dialog = dialog
@@ -7464,6 +7556,7 @@ class AutomationApp(tk.Tk):
         self._set_window_icon(dialog)
         dialog.title(f"执行脚本组前提醒 - {group_name}")
         dialog.geometry("520x360")
+        _center_window(dialog, self)
         dialog.transient(self)
         dialog.grab_set()
         dialog.attributes('-topmost', True)
