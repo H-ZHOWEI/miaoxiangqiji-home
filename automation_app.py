@@ -35,7 +35,7 @@ except Exception as _pl_import_err:
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -3997,6 +3997,57 @@ class AutomationApp(tk.Tk):
         ttk.Button(local_btn, text="清空本机云端消息", command=do_clear_local).pack(side=tk.LEFT, padx=4)
         ttk.Button(local_btn, text="保存本机设置", style='Primary.TButton',
                    command=do_save_local).pack(side=tk.RIGHT, padx=4)
+
+        # ---- 手机签到任务（本机配对码对应的手机，让手机模拟点击/长按/翻页）----
+        phone_box = ttk.LabelFrame(page_local, text="遥控手机签到（手机 App 里的自动签到任务）")
+        phone_box.grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 8))
+        phone_box.columnconfigure(0, weight=1)
+        task_var = tk.StringVar()
+        task_combo = ttk.Combobox(phone_box, textvariable=task_var, state="readonly")
+        task_combo.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
+
+        def refresh_phone_tasks():
+            def worker():
+                ok, tasks = link.fetch_phone_auto_tasks()
+                def ui():
+                    names = [t.get("name", "") for t in tasks if t.get("name")]
+                    task_combo["values"] = names
+                    phone_hint.set(
+                        "已读到 %d 个手机签到任务。" % len(names) if ok and names else
+                        "未读到手机任务：请在手机 App「④ 自动签到」里建好任务，"
+                        "并确认本机配对码与手机一致、联动已启用。")
+                    if names:
+                        task_combo.current(0)
+                try:
+                    self.after(0, ui)
+                except Exception:
+                    pass
+            threading.Thread(target=worker, daemon=True).start()
+
+        phone_hint = tk.StringVar(value="点「刷新手机任务」读取手机上的签到任务清单。")
+        ttk.Label(phone_box, textvariable=phone_hint, foreground='#888888',
+                  wraplength=560, justify=tk.LEFT).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=6)
+
+        def do_run_phone_task():
+            name = task_var.get().strip()
+            if not name:
+                messagebox.showinfo("提示", "请先点「刷新手机任务」并选择一个任务。", parent=dlg)
+                return
+            ok, err = link.send_phone_auto_task(name)
+            if ok:
+                messagebox.showinfo("已发送", "已让手机执行签到任务「%s」。\n"
+                                    "手机执行完会把结果回传到「设备」页的任务通知里。" % name, parent=dlg)
+                self.log_message("联动：下发手机签到任务 [%s]" % name)
+            else:
+                messagebox.showerror("发送失败", "指令发送失败：%s" % err, parent=dlg)
+
+        btn_row = ttk.Frame(phone_box)
+        btn_row.grid(row=2, column=0, columnspan=2, sticky="e", padx=6, pady=(4, 6))
+        ttk.Button(btn_row, text="↻ 刷新手机任务", command=refresh_phone_tasks).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_row, text="▶ 让手机执行", style='Primary.TButton',
+                   command=do_run_phone_task).pack(side=tk.LEFT, padx=4)
+        refresh_phone_tasks()
 
         # ==================== 页2：设备（遥控其他电脑） ====================
         self._build_device_page(page_dev, link, dlg)

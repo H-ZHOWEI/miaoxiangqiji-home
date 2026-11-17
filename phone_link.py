@@ -50,6 +50,8 @@ CMD_ACTION_STOP = "stop"
 VALID_CONTROL_ACTIONS = (CMD_ACTION_PAUSE, CMD_ACTION_RESUME, CMD_ACTION_STOP)
 MSG_HEARTBEAT = "heartbeat"       # 电脑在线心跳
 MSG_GROUP_LIST = "group_list"     # 电脑上报的可执行任务组清单（手机据此展示）
+MSG_RUN_AUTO_TASK = "run_auto_task"    # 电脑下发：让手机执行某个本地签到任务（pc2phone）
+MSG_AUTO_TASK_LIST = "auto_task_list"  # 手机上报：手机本地签到任务清单（pc2phone）
 
 # 设置键（存进 app_settings.json）
 SETTING_ENABLED = "phone_link_enabled"
@@ -764,6 +766,37 @@ class PhoneLink:
         result["notifications"] = notices[:12]
         result["ok"] = True
         return result
+
+    def fetch_phone_auto_tasks(self):
+        """读取配对手机上报的本地签到任务清单（pc2phone / auto_task_list）。"""
+        code = self.pair_code
+        if not code:
+            return False, []
+        box = CloudMailbox(code)
+        ok, rows = box.get_latest(DIR_PC2PHONE, MSG_AUTO_TASK_LIST, 1)
+        if not ok:
+            return False, []
+        try:
+            rows = rows or []
+            if not rows:
+                return True, []
+            payload = rows[0].get("payload") or "{}"
+            data = json.loads(payload) if isinstance(payload, str) else payload
+            tasks = data.get("tasks", []) if isinstance(data, dict) else []
+            return True, tasks or []
+        except Exception:
+            return False, []
+
+    def send_phone_auto_task(self, task_name, task_id=""):
+        """让配对手机执行它的某个本地签到任务（写本机 pc2phone 信箱）。"""
+        code = self.pair_code
+        if not code:
+            return False, "未设置配对码"
+        payload = {"task_name": task_name, "task_id": task_id}
+        box = CloudMailbox(code)
+        ok, resp = box.send(DIR_PC2PHONE, MSG_RUN_AUTO_TASK,
+                            "执行手机签到", task_name, payload)
+        return bool(ok), ("" if ok else str(resp))
 
     def send_device_command(self, code, target_type, target_name):
         """向某台电脑下发「执行任务组」指令（写它的 phone2pc 信箱）。"""
