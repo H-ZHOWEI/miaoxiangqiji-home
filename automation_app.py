@@ -23,10 +23,17 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+# 手机联动模块（电脑 <-> 手机 云端信箱双向通信）
+try:
+    import phone_link as _phone_link
+except Exception as _pl_import_err:
+    _phone_link = None
+    print("phone_link 模块加载失败：%s" % _pl_import_err)
+
 # ==================== 版本与在线更新 ====================
 # 每次发布新版本时：① 更新 APP_VERSION ② 同步更新仓库根目录 latest.json 的
 # version / changelog ③ 重新打包 exe 并上传（含 latest.json）
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 # 版本信息源：依次尝试。gh-proxy 国内加速镜像放首位（直连最快，海外也可达），
 # raw 直连次之（海外无代理环境用），GitHub API 兜底
 _RAW_INFO_URL = ("https://raw.githubusercontent.com/H-ZHOWEI/miaoxiangqiji-home/"
@@ -3644,7 +3651,98 @@ class AutomationApp(tk.Tk):
         # 初始化定时任务调度器
         self.scheduler = TaskScheduler(self)
         self.scheduler.start()
+
+        # 初始化手机联动（电脑 <-> 手机 云端信箱）
+        self.phone_link = None
+        if _phone_link is not None:
+            try:
+                self.phone_link = _phone_link.PhoneLink(self, self.app_settings)
+                # 首次启用时若无配对码，自动生成一枚
+                if (self.app_settings.get(_phone_link.SETTING_ENABLED)
+                        and not self.app_settings.get(_phone_link.SETTING_PAIR_CODE)):
+                    self.app_settings[_phone_link.SETTING_PAIR_CODE] = _phone_link.new_pair_code()
+                self.phone_link.start()
+            except Exception as e:
+                self.log_message("手机联动初始化失败：%s" % e)
+                self.phone_link = None
     
+    def save_phone_link_settings(self):
+        """供 PhoneLink 回调：把联动设置持久化到 app_settings.json。"""
+        try:
+            save_app_settings(self.app_settings)
+        except Exception as e:
+            self.log_message("保存手机联动设置失败：%s" % e)
+
+    def open_phone_link_dialog(self):
+        """弹出「手机联动」配置窗口：配对码 / 启用 / 状态。"""
+        if _phone_link is None or self.phone_link is None:
+            messagebox.showerror("手机联动不可用", "联动模块未能加载，请检查安装。")
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title("手机联动设置")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.columnconfigure(1, weight=1)
+        pad = {"padx": 8, "pady": 6}
+        ttk.Label(dlg, text="让电脑与手机互相通知、远程下发任务",
+                  font=('微软雅黑', 10, 'bold')).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+
+        enabled_var = tk.BooleanVar(value=bool(self.app_settings.get(_phone_link.SETTING_ENABLED)))
+        pair_var = tk.StringVar(value=self.app_settings.get(_phone_link.SETTING_PAIR_CODE, ""))
+        status_var = tk.StringVar(value=self.phone_link.status_text())
+
+        ttk.Checkbutton(dlg, text="启用手机联动", variable=enabled_var).grid(
+            row=1, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Label(dlg, text="配对码：").grid(row=2, column=0, sticky="e", **pad)
+        pair_entry = ttk.Entry(dlg, textvariable=pair_var, width=20, font=('Consolas', 11))
+        pair_entry.grid(row=2, column=1, sticky="ew", **pad)
+
+        def gen_code():
+            pair_var.set(_phone_link.new_pair_code())
+
+        ttk.Button(dlg, text="生成新配对码", command=gen_code).grid(row=2, column=2, **pad)
+        ttk.Label(dlg, text="状态：").grid(row=3, column=0, sticky="e", **pad)
+        ttk.Label(dlg, textvariable=status_var, foreground='#0078d4').grid(
+            row=3, column=1, columnspan=2, sticky="w", **pad)
+
+        tip = ("使用步骤：\n"
+               "1. 点「生成新配对码」，记住这串码（如 AB3D7K9M）；\n"
+               "2. 在手机 App 里填同一个配对码；\n"
+               "3. 勾选「启用手机联动」并保存；\n"
+               "4. 任务完成/失败会自动通知手机；在手机点任务组可远程让电脑执行。\n"
+               "提示：配对码就是钥匙，不要告诉别人。")
+        ttk.Label(dlg, text=tip, justify=tk.LEFT, foreground='#555555').grid(
+            row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 8))
+
+        btn_row = ttk.Frame(dlg)
+        btn_row.grid(row=5, column=0, columnspan=3, sticky="e", padx=8, pady=(0, 8))
+
+        def do_save():
+            code = pair_var.get().strip().upper()
+            if enabled_var.get() and not code:
+                messagebox.showwarning("提示", "请先生成或填写配对码。", parent=dlg)
+                return
+            self.phone_link.set_enabled(enabled_var.get())
+            self.phone_link.set_pair_code(code)
+            if enabled_var.get():
+                self.phone_link.sync_group_list()
+            status_var.set(self.phone_link.status_text())
+            self.log_message("手机联动设置已保存（%s）" %
+                             ("已启用" if enabled_var.get() else "已关闭"))
+            messagebox.showinfo("已保存", "手机联动设置已保存。", parent=dlg)
+
+        def do_clear():
+            if not messagebox.askyesno("确认", "清空本配对码在云端的全部消息？\n"
+                                                "（不影响你的任务数据）", parent=dlg):
+                return
+            ok, _ = _phone_link.CloudMailbox(pair_var.get().strip().upper()).clear_own()
+            messagebox.showinfo("完成", "云端消息已清空。" if ok else "清空失败，请检查网络。", parent=dlg)
+
+        ttk.Button(btn_row, text="清空云端消息", command=do_clear).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_row, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_row, text="保存", style='Primary.TButton',
+                   command=do_save).pack(side=tk.RIGHT, padx=4)
+
     def get_icon_path(self):
         """获取图标的绝对路径"""
         try:
@@ -6521,8 +6619,10 @@ class AutomationApp(tk.Tk):
                    command=self.safe_toggle_recording).pack(side=tk.RIGHT, padx=2)
         ttk.Button(toolbar, text="停止录制", style='Warning.TButton',
                    command=self.safe_stop_recording).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(toolbar, text="手机联动",
+                   command=self.open_phone_link_dialog).pack(side=tk.RIGHT, padx=(12, 2))
         ttk.Button(toolbar, text="定时任务",
-                   command=self.open_task_manager).pack(side=tk.RIGHT, padx=(12, 2))
+                   command=self.open_task_manager).pack(side=tk.RIGHT, padx=(2, 2))
         ttk.Button(toolbar, text="组管理",
                    command=self.open_group_manager_dialog).pack(side=tk.RIGHT, padx=2)
         ttk.Button(toolbar, text="截图高级设置",
@@ -8368,6 +8468,13 @@ class AutomationApp(tk.Tk):
         self.scheduler.stop()
         # 同步保存定时任务
         self.scheduler.save_tasks_sync()
+
+        # 停止手机联动轮询线程
+        try:
+            if self.phone_link is not None:
+                self.phone_link.stop()
+        except Exception:
+            pass
         
         self.screenshot_engine.stop(log=False)
         
