@@ -248,17 +248,22 @@ class PhoneLink:
             self._online = False
 
     def set_pair_code(self, code):
+        old = self.pair_code
         self.settings[SETTING_PAIR_CODE] = str(code or "").strip().upper()
         self.save_settings()
         self.refresh_mailbox()
+        if self.pair_code != old:
+            # 换码后清掉旧信箱的指令去重记录，并立即同步任务组清单。
+            # （这两行原先误写在 local_name 的 return 之后，永不执行，
+            #   导致换码后旧指令去重残留、组清单最多延迟 2 分钟才更新。）
+            self._handled_ids.clear()
+            self._last_group_sync = 0.0
 
     @property
     def local_name(self):
         """本机名称：遥控别的电脑时告诉对方"是谁在下指令"。"""
         name = str(self.settings.get(SETTING_LOCAL_NAME, "") or "").strip()
         return name or "未命名设备"
-        self._handled_ids.clear()
-        self._last_group_sync = 0.0  # 换码后立即同步组清单
 
     def collect_groups(self):
         """收集电脑上可执行的任务组清单。返回 [{type, name, label}]。"""
@@ -338,13 +343,14 @@ class PhoneLink:
 
     # ------------------------------------------------------------------ 上报
     def notify(self, msg_type, title, content, payload=None):
-        """线程安全地写入一条通知到云端。"""
+        """线程安全地写入一条通知到云端，返回是否写入成功。"""
         if not self.enabled or not self.pair_code:
-            return
+            return False
         box = self._mailbox or CloudMailbox(self.pair_code)
         ok, _ = box.send(DIR_PC2PHONE, msg_type, title, content, payload)
         if not ok:
             self._last_error = "上报失败"
+        return ok
 
     def notify_task(self, status, label, detail=""):
         mapping = {
@@ -589,8 +595,12 @@ class PhoneLink:
         now = time.time()
         if now - self._last_heartbeat < 60:
             return
-        self._last_heartbeat = now
-        self.notify(MSG_HEARTBEAT, "电脑在线", "电脑端联动服务运行中")
+        ok = self.notify(MSG_HEARTBEAT, "电脑在线", "电脑端联动服务运行中")
+        # 成功按 60 秒节流；失败只等约 10 秒就重试。
+        # 合盖唤醒那一下网络往往还没就绪，旧写法在发之前就把时间戳记成成功，
+        # 失败也要等满 60 秒才补发，多次叠加就是"过五六分钟才重新有心跳"。
+        # 失败时把时间戳回拨 50 秒 => 下一轮约 10 秒后再试，网络一恢复立刻补上。
+        self._last_heartbeat = now if ok else (now - 50)
 
     # ------------------------------------------------------------------ 工具
     def _safe_mark_read(self, mid):
